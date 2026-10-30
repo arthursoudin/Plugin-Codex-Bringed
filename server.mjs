@@ -25,6 +25,14 @@ function createHttpServer(workflow, port, mcpToken) { return http.createServer(a
     res.writeHead(403).end();
     return;
   }
+  if (req.headers.origin) {
+    let origin;
+    try { origin = new URL(req.headers.origin); } catch {}
+    if (!origin || origin.origin !== `http://${req.headers.host}` || origin.pathname !== '/' || origin.search || origin.hash) {
+      res.writeHead(403).end();
+      return;
+    }
+  }
   if (req.url?.startsWith('/validate/')) {
     await workflow.serveValidation(req, res);
     return;
@@ -39,10 +47,6 @@ function createHttpServer(workflow, port, mcpToken) { return http.createServer(a
   }
   if (req.url !== '/mcp') {
     res.writeHead(404).end();
-    return;
-  }
-  if (req.headers.origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(req.headers.origin)) {
-    res.writeHead(403).end();
     return;
   }
   if (!['POST', 'DELETE'].includes(req.method)) {

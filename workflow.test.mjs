@@ -301,6 +301,10 @@ test('typecheck separado exige aprovação local e registra relatório consultá
     assert.match(page.data, /<main id="main-content">/);
     assert.match(page.data, /a\{color:#a8d5ff\}/);
     const token = /name="csrf" value="([0-9a-f]+)"/.exec(page.data)[1];
+    const unchecked = response();
+    await workflow.serveValidation(Object.assign(Readable.from([`csrf=${token}`]), { method: 'POST', url: `/validate/${prepared.request_id}`, headers: { host: '127.0.0.1:18473', 'content-type': 'application/x-www-form-urlencoded', cookie: `codex_validation=${token}` } }), unchecked);
+    assert.equal(unchecked.status, 400);
+    assert.equal(calls, 0);
     const denied = response();
     await workflow.serveValidation(Object.assign(Readable.from([`csrf=${token}&confirm_project_scripts=yes`]), { method: 'POST', url: `/validate/${prepared.request_id}`, headers: { host: 'elsewhere.invalid', 'content-type': 'application/x-www-form-urlencoded', cookie: `codex_validation=${token}` } }), denied);
     assert.equal(denied.status, 403);

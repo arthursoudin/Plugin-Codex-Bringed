@@ -53,6 +53,26 @@ async function ready() {
   throw new Error('HTTP adapter did not start');
 }
 
+test('HTTP MCP exige token válido para POST e DELETE', async () => {
+  await ready();
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  const missing = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+  assert.equal(missing.status, 401);
+  const invalid = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json', 'x-codexbridge-token': 'invalid-token' }, body });
+  assert.equal(invalid.status, 401);
+  const invalidDelete = await fetch(base, { method: 'DELETE', headers: { 'x-codexbridge-token': 'invalid-token' } });
+  assert.equal(invalidDelete.status, 401);
+  const validDelete = await fetch(base, { method: 'DELETE', headers: { 'x-codexbridge-token': fs.readFileSync(tokenFile, 'utf8').trim() } });
+  assert.equal(validDelete.status, 204);
+  const token = fs.readFileSync(tokenFile, 'utf8').trim();
+  const crossPortOrigin = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json', 'x-codexbridge-token': token, origin: `http://127.0.0.1:${port + 1}` }, body });
+  assert.equal(crossPortOrigin.status, 403);
+  const crossSiteDashboard = await fetch(`http://127.0.0.1:${port}/dashboard`, { headers: { origin: 'https://example.invalid' } });
+  assert.equal(crossSiteDashboard.status, 403);
+  const sameOriginDashboard = await fetch(`http://127.0.0.1:${port}/dashboard`, { headers: { origin: `http://127.0.0.1:${port}` } });
+  assert.equal(sameOriginDashboard.status, 200);
+});
+
 test('MCP handshake, discovery, and safe status call', async () => {
   try {
     await ready();

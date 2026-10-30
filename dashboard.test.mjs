@@ -44,6 +44,9 @@ test('dashboard guia configuração de MCP sem projeto, guarda roteiro local e a
     assert.match(page.data, /Roteiros salvos neste computador \(0\)/);
     assert.match(page.data, /target_clients/);
     assert.match(page.data, /O que vou receber para cada CLI\?/);
+    assert.match(page.data, /Para rotacioná-lo, pare o adapter e o tunnel, remova somente esse arquivo e reinicie ambos/);
+    assert.match(page.data, /Perfis Tunnel gerados usam uma referência de ambiente e não precisam ser salvos novamente/);
+    assert.match(page.data, /Processos da mesma conta podem ler esse arquivo/);
     assert.match(page.data, /OpenCode CLI:<\/strong> recebe trecho JSON\/JSONC para mesclar/);
     assert.match(page.data, /Passo 2: escolha em quais CLIs preparar instruções/);
     const invalid = fieldsFrom(page.data); invalid.set('server_name', 'Agenda'); invalid.set('connection_type', 'remote_url'); invalid.set('server_url', 'https://mcp.example.com/mcp?token=private'); invalid.set('authentication', 'api_key'); invalid.append('target_clients', 'hermes_cli');
