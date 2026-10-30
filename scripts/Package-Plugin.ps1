@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $files = @(
   'README.md', 'package.json', 'Start.cmd', 'Tunnel.cmd', 'Install.cmd',
-  'dashboard.mjs', 'dashboard-workshop.js', 'server.mjs', 'stdio.mjs', 'workflow.mjs', 'project-catalog.mjs', 'task-retention.mjs', 'routing.mjs', 'runtime-info.mjs', 'mcp-setup.mjs', 'tool-annotations.mjs', 'process-safety.mjs',
+  'dashboard.mjs', 'dashboard-workshop.js', 'server.mjs', 'stdio.mjs', 'workflow.mjs', 'project-catalog.mjs', 'task-retention.mjs', 'routing.mjs', 'runtime-info.mjs', 'mcp-setup.mjs', 'tool-annotations.mjs', 'process-safety.mjs', 'http-auth.mjs',
   'bridge\approve-task.mjs', 'bridge\server.mjs', 'browser-readonly.mjs',
   'scripts\Common.ps1', 'scripts\Start-Adapter.ps1', 'scripts\Start-Tunnel.ps1', 'scripts\Compare-Installations.ps1', 'scripts\Install-Tools.ps1', 'scripts\Install-Graphify.ps1', 'scripts\Install-TokenSavingsTool.ps1',
   'config\settings.example.json', 'config\tunnels\example.yaml',

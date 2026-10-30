@@ -729,7 +729,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
   const tunnelYaml = profile => [
     'config_version: 1', 'control_plane:', '  base_url: "https://api.openai.com"', `  tunnel_id: ${JSON.stringify(profile.tunnel_id)}`,
     '  api_key: "env:CONTROL_PLANE_API_KEY"', 'health:', `  listen_addr: "127.0.0.1:${profile.health_port}"`,
-    'admin_ui:', '  open_browser: false', 'log:', '  level: info', '  format: json', 'mcp:', '  server_urls:', '    - channel: main', `      url: ${JSON.stringify(profile.mcp_url)}`, '',
+    'admin_ui:', '  open_browser: false', 'log:', '  level: info', '  format: json', 'mcp:', '  extra_headers:', '    X-CodexBridge-Token: "env:CODEXBRIDGE_MCP_TOKEN"', '  server_urls:', '    - channel: main', `      url: ${JSON.stringify(profile.mcp_url)}`, '',
   ].join('\n');
   const tunnelDigest = text => crypto.createHash('sha256').update(text).digest('hex');
   function validateTunnelInput(fields) {

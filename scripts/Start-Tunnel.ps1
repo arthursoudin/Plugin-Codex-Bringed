@@ -26,6 +26,15 @@ $mcpPort = if ($BridgeSettings.httpPort) { [int]$BridgeSettings.httpPort } else 
 if (-not (Test-LocalMcpEndpoint -Port $mcpPort -TimeoutSeconds 3)) {
     throw "Endpoint MCP local indisponível em http://127.0.0.1:$mcpPort/mcp. Inicie o adapter com Start.cmd e tente novamente. doctor/run não foram executados."
 }
+$profileContents = Get-Content -LiteralPath $profileFile -Raw
+if ($profileContents -notmatch '(?im)^\s*X-CodexBridge-Token\s*:') { throw "Tunnel profile '$ProfileName' is outdated. Open Dashboard > Tunnels and save the profile again to add MCP authentication." }
+if ($env:MCP_EXTRA_HEADERS) { throw 'MCP_EXTRA_HEADERS overrides profile headers. Remove that environment variable before starting the tunnel.' }
+$mcpTokenFile = if ($env:CODEXBRIDGE_MCP_TOKEN_FILE) { $env:CODEXBRIDGE_MCP_TOKEN_FILE } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'CodexBridge\auth\mcp-token' } else { Join-Path $HOME '.codexbridge\auth\mcp-token' }
+if (-not (Test-Path -LiteralPath $mcpTokenFile -PathType Leaf)) { throw "MCP token not found at '$mcpTokenFile'. Start the adapter before starting the tunnel." }
+$mcpToken = (Get-Content -LiteralPath $mcpTokenFile -Raw).Trim()
+if ($mcpToken -notmatch '^[A-Za-z0-9_-]{43}$') { throw 'Local MCP token is invalid. Restart the adapter to recreate it securely.' }
+$priorMcpToken = $env:CODEXBRIDGE_MCP_TOKEN
+$env:CODEXBRIDGE_MCP_TOKEN = $mcpToken
 $keyEnteredHere = $false
 try {
     if (-not $env:CONTROL_PLANE_API_KEY) {
@@ -40,4 +49,5 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "O tunnel encerrou com código $LASTEXITCODE." }
 } finally {
     if ($keyEnteredHere) { Remove-Item Env:\CONTROL_PLANE_API_KEY -ErrorAction SilentlyContinue }
+    if ($null -eq $priorMcpToken) { Remove-Item Env:\CODEXBRIDGE_MCP_TOKEN -ErrorAction SilentlyContinue } else { $env:CODEXBRIDGE_MCP_TOKEN = $priorMcpToken }
 }

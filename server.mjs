@@ -1,5 +1,6 @@
 import http from 'node:http';
 import path from 'node:path';
+import { defaultMcpTokenFile, loadOrCreateMcpToken, matchesMcpToken } from './http-auth.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createWorkflow } from './workflow.mjs';
 
@@ -19,7 +20,7 @@ export function dispatchMcp(message, workflow) {
     : workflow.handle(message, handle);
 }
 
-function createHttpServer(workflow, port) { return http.createServer(async (req, res) => {
+function createHttpServer(workflow, port, mcpToken) { return http.createServer(async (req, res) => {
   if (![`127.0.0.1:${port}`, `localhost:${port}`].includes(req.headers.host)) {
     res.writeHead(403).end();
     return;
@@ -44,12 +45,17 @@ function createHttpServer(workflow, port) { return http.createServer(async (req,
     res.writeHead(403).end();
     return;
   }
-  if (req.method === 'DELETE') {
-    res.writeHead(204).end();
+  if (!['POST', 'DELETE'].includes(req.method)) {
+    res.writeHead(405, { Allow: 'POST, DELETE' }).end();
     return;
   }
-  if (req.method !== 'POST') {
-    res.writeHead(405, { Allow: 'POST, DELETE' }).end();
+  if (!matchesMcpToken(req.headers['x-codexbridge-token'], mcpToken)) {
+    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+      .end(JSON.stringify({ error: 'MCP authentication required.' }));
+    return;
+  }
+  if (req.method === 'DELETE') {
+    res.writeHead(204).end();
     return;
   }
   if (!String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) {
@@ -88,6 +94,8 @@ function createHttpServer(workflow, port) { return http.createServer(async (req,
 
 export async function startHttpAdapter({ port = Number(process.env.CODEXBRIDGE_HTTP_PORT || 18473), allowFallback = false } = {}) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid CODEXBRIDGE_HTTP_PORT');
+  const mcpTokenFile = defaultMcpTokenFile({ env: process.env, testDashboardRoot });
+  const mcpToken = loadOrCreateMcpToken(mcpTokenFile);
   for (let candidate = port; candidate <= Math.min(port + (allowFallback ? 9 : 0), 65535); candidate++) {
     const workflow = createWorkflow(bridge, {
       baseUrl: `http://${host}:${candidate}`,
@@ -95,7 +103,7 @@ export async function startHttpAdapter({ port = Number(process.env.CODEXBRIDGE_H
       dashboardRoot: testDashboardRoot,
       enableHermesExecution: process.env.CODEXBRIDGE_ENABLE_HERMES_EXECUTION === '1',
     });
-    const server = createHttpServer(workflow, candidate);
+    const server = createHttpServer(workflow, candidate, mcpToken);
     try {
       await new Promise((resolve, reject) => {
         server.once('error', reject);

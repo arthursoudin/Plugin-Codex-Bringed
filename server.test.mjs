@@ -45,6 +45,7 @@ child = spawn(process.execPath, ['server.mjs'], {
   stdio: ['ignore', 'ignore', 'pipe'],
 });
 const base = `http://127.0.0.1:${port}/mcp`;
+const tokenFile = path.join(testStateRoot, 'http-token');
 async function ready() {
   for (let i = 0; i < 40; i++) {
     try { await fetch(base); return; } catch { await new Promise(r => setTimeout(r, 50)); }
@@ -57,7 +58,7 @@ test('MCP handshake, discovery, and safe status call', async () => {
     await ready();
     const rpc = async (id, method, params) => {
       const response = await fetch(base, {
-        method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-codexbridge-token': fs.readFileSync(tokenFile, 'utf8').trim(), accept: 'application/json, text/event-stream' },
         body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
       });
       assert.equal(response.status, 200);
@@ -65,7 +66,7 @@ test('MCP handshake, discovery, and safe status call', async () => {
     };
     const init = await rpc(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
     assert.equal(init.result.serverInfo.name, 'codexbridge');
-    assert.equal(init.result.serverInfo.version, '0.2.4');
+    assert.equal(init.result.serverInfo.version, '0.2.5');
     const listed = await rpc(2, 'tools/list', {});
     const expectedTools = [
       'public_page_open', 'public_page_read',

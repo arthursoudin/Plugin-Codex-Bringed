@@ -16,6 +16,8 @@ account-plugin/plugin.json
 account-plugin/.codex-plugin/
 bridge/approvals/
 bridge/reports/
+bridge/http-token
+mcp-token
 bridge/*active.lock
 bridge/.fake-codex.mjs
 config/settings.local.json

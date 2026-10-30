@@ -50,7 +50,10 @@ test('ChatGPT configura o projeto autorizado uma vez e preserva o histórico', a
     const setup = (await invoke('codex_plugin_setup')).result.structuredContent;
     assert.equal(setup.checks.project_registered, true);
     assert.equal(setup.secrets_exposed, false);
-    assert.ok((await invoke('codex_plugin_instructions')).result.structuredContent.hermes_workflow.length >= 4);
+    const hermesGuidance = (await invoke('codex_plugin_instructions')).result.structuredContent.hermes_workflow;
+    assert.equal(hermesGuidance.length, 1);
+    assert.match(hermesGuidance[0], /desativada por padrao/i);
+    assert.doesNotMatch(hermesGuidance.join(' '), /CODEXBRIDGE_ENABLE_HERMES_EXECUTION/);
     assert.ok((await invoke('codex_plugin_capabilities')).result.structuredContent.groups.some(group => group.name === 'Hermes executor'));
     assert.match((await invoke('codex_bridge_guide')).result.structuredContent.guide, /tunnel/i);
     assert.match((await invoke('codex_project_readme')).result.structuredContent.readme, /Como iniciar/);
@@ -243,12 +246,12 @@ test('Hermes executa somente após aprovação local, consome a frase e salva va
     for (let i = 0; i < 100 && hermesCalls === 0; i++) await new Promise(resolve => setTimeout(resolve, 10));
     for (let i = 0; i < 200; i++) {
       const result = (await rpc('hermes_validation_result', { task_id: prepared.task_id })).result.structuredContent;
-      if (result.state === 'passed' && !fs.existsSync(bridge.LOCK_PATH)) break;
+      if (result.state === 'not_started' && !fs.existsSync(bridge.LOCK_PATH)) break;
       await new Promise(resolve => setTimeout(resolve, 10));
     }
     const report = (await rpc('hermes_validation_result', { task_id: prepared.task_id })).result.structuredContent;
-    assert.equal(report.state, 'passed', JSON.stringify(report));
-    assert.deepEqual(checks, ['typecheck', 'build']);
+    assert.equal(report.state, 'not_started', JSON.stringify(report));
+    assert.deepEqual(checks, []);
     assert.equal(hermesCalls, 1);
     assert.equal((await rpc('hermes_execute_approved', { task_id: prepared.task_id, approval_phrase: prepared.approval_phrase })).result.isError, true);
     assert.equal((await rpc('hermes_task_logs', { task_id: prepared.task_id })).result.structuredContent.result, 'Edited files');
@@ -299,10 +302,10 @@ test('typecheck separado exige aprovação local e registra relatório consultá
     assert.match(page.data, /a\{color:#a8d5ff\}/);
     const token = /name="csrf" value="([0-9a-f]+)"/.exec(page.data)[1];
     const denied = response();
-    await workflow.serveValidation(Object.assign(Readable.from([`csrf=${token}`]), { method: 'POST', url: `/validate/${prepared.request_id}`, headers: { host: 'elsewhere.invalid', 'content-type': 'application/x-www-form-urlencoded', cookie: `codex_validation=${token}` } }), denied);
+    await workflow.serveValidation(Object.assign(Readable.from([`csrf=${token}&confirm_project_scripts=yes`]), { method: 'POST', url: `/validate/${prepared.request_id}`, headers: { host: 'elsewhere.invalid', 'content-type': 'application/x-www-form-urlencoded', cookie: `codex_validation=${token}` } }), denied);
     assert.equal(denied.status, 403);
     const approved = response();
-    await workflow.serveValidation(Object.assign(Readable.from([`csrf=${token}`]), { method: 'POST', url: `/validate/${prepared.request_id}`, headers: { host: '127.0.0.1:18473', 'content-type': 'application/x-www-form-urlencoded', cookie: `codex_validation=${token}` } }), approved);
+    await workflow.serveValidation(Object.assign(Readable.from([`csrf=${token}&confirm_project_scripts=yes`]), { method: 'POST', url: `/validate/${prepared.request_id}`, headers: { host: '127.0.0.1:18473', 'content-type': 'application/x-www-form-urlencoded', cookie: `codex_validation=${token}` } }), approved);
     assert.equal(approved.status, 200);
     assert.equal((await rpc('codex_run_typecheck', { action: 'start', request_id: prepared.request_id })).result.structuredContent.state, 'running');
     await new Promise(resolve => setImmediate(resolve));
@@ -331,7 +334,7 @@ test('validação separada executa um script npm inofensivo após aprovação lo
     const page = response(); await workflow.serveValidation({ method: 'GET', url: `/validate/${id}` }, page);
     const token = /name="csrf" value="([0-9a-f]+)"/.exec(page.data)[1];
     const approved = response();
-    await workflow.serveValidation(Object.assign(Readable.from([`csrf=${token}`]), { method: 'POST', url: `/validate/${id}`, headers: { host: '127.0.0.1:18473', 'content-type': 'application/x-www-form-urlencoded', cookie: `codex_validation=${token}` } }), approved);
+    await workflow.serveValidation(Object.assign(Readable.from([`csrf=${token}&confirm_project_scripts=yes`]), { method: 'POST', url: `/validate/${id}`, headers: { host: '127.0.0.1:18473', 'content-type': 'application/x-www-form-urlencoded', cookie: `codex_validation=${token}` } }), approved);
     assert.equal(approved.status, 200);
     const packagePath = path.join(dir, 'package.json');
     const originalPackage = fs.readFileSync(packagePath, 'utf8');
@@ -386,11 +389,11 @@ test('a execução exige aprovação local e a página registra a aprovação da
     assert.match(get.data, /Executor:<\/strong> Codex/);
     assert.match(get.data, /Pasta selecionada:<\/strong>/);
     assert.match(get.data, /Uso:<\/strong> uma única execução/);
-    assert.match(get.data, /Validações:<\/strong>.*npm run typecheck.*npm run build/);
+    assert.match(get.data, /Nenhum script npm ser.*iniciado automaticamente/);
     assert.match(get.data, /<details><summary>Ver instrução completa<\/summary>/);
     assert.match(get.data, /Criar recurso &lt;seguro&gt;/);
     assert.doesNotMatch(get.data, /<pre>Criar recurso <seguro><\/pre>/);
-    assert.match(get.data, /npm run typecheck/);
+    assert.doesNotMatch(get.data, /npm run typecheck/);
     assert.match(get.data, /Sem sua aprovação, esta tarefa não começa\./);
     const token = /name="csrf" value="([0-9a-f]+)"/.exec(get.data)[1];
     const bad = response();

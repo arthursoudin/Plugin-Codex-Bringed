@@ -150,8 +150,8 @@ Nos roteiros salvos, **Conferir registro local** verifica Codex e Hermes com `mc
 Para testar um ZIP sem substituir uma instalação existente, extraia-o para uma pasta nova e escolha uma porta livre. O exemplo usa `18478` e inicia somente o adapter, sem alterar a configuração MCP do Codex:
 
 ```powershell
-$zipPath = 'CAMINHO\codexbridge-private-test-0.2.4.zip'
-$testRoot = Join-Path $env:TEMP 'CodexBridge-PrivateTest-0.2.4'
+$zipPath = 'CAMINHO\codexbridge-private-test-0.2.5.zip'
+$testRoot = Join-Path $env:TEMP 'CodexBridge-PrivateTest-0.2.5'
 if (Test-Path -LiteralPath $testRoot) { throw "A pasta já existe; escolha outro nome: $testRoot" }
 Expand-Archive -LiteralPath $zipPath -DestinationPath $testRoot
 & (Join-Path $testRoot 'scripts\Start-Adapter.ps1') -Port 18478
@@ -161,7 +161,9 @@ Em outro PowerShell, confira o handshake MCP local sem iniciar Codex CLI ou tunn
 
 ```powershell
 $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"private-test","version":"1"}}}'
-Invoke-RestMethod -Uri 'http://127.0.0.1:18478/mcp' -Method Post -ContentType 'application/json' -Body $body
+$tokenPath = Join-Path $env:LOCALAPPDATA 'CodexBridge\auth\mcp-token'
+$token = (Get-Content -LiteralPath $tokenPath -Raw).Trim()
+Invoke-RestMethod -Uri 'http://127.0.0.1:18478/mcp' -Method Post -ContentType 'application/json' -Headers @{ 'X-CodexBridge-Token' = $token } -Body $body
 ```
 
 O resultado esperado informa `serverInfo.version` igual à versão do `package.json`. Esse teste local não conecta ChatGPT, não valida o tunnel e não executa tarefa Codex. Encerre o adapter de teste com Ctrl+C no terminal em que ele foi iniciado.
@@ -179,17 +181,17 @@ O resultado esperado informa `serverInfo.version` igual à versão do `package.j
 
 4. Depois que o tunnel estiver iniciado, conecte-o no ChatGPT.
 
-Antes de solicitar a chave ou executar `doctor`, o script verifica o endpoint MCP local. Se estiver indisponível, orienta iniciar o adapter e não executa `doctor` nem `run`. Com a conexão local confirmada, executa `doctor` antes de `run`; se a variável não estiver definida, pede a chave com entrada oculta. A conexão real ao serviço de tunnel e a disponibilidade no ChatGPT dependem de validação manual do usuário.
+Antes de solicitar a chave ou executar `doctor`, o script verifica o endpoint MCP local e confere se o perfil inclui o cabecalho de autenticacao. Perfis antigos precisam ser salvos novamente em Dashboard > Tunnels. O launcher carrega o token local apenas no ambiente do processo; o YAML armazena a referencia `env:CODEXBRIDGE_MCP_TOKEN`, nunca o valor. Remova `MCP_EXTRA_HEADERS` do ambiente antes de iniciar, pois ele substitui os cabecalhos do perfil. Cada perfil deve apontar somente para o CodexBridge, pois os cabecalhos estaticos se aplicam a todos os destinos MCP configurados naquele perfil. A conexao real ao servico de tunnel e a disponibilidade no ChatGPT dependem de validacao manual.
 
 ## Segurança e dados locais
 
 **Modelo de ameaça:** o CodexBridge inicia CLIs e scripts locais com as permissões da sua conta do Windows. A aprovação do Bridge confirma uma tarefa específica, mas não cria um sandbox de sistema operacional para Hermes, npm, instaladores ou ferramentas externas. Use somente projetos e ferramentas confiáveis.
 
 - Tarefas de escrita do Codex sempre exigem aprovação local de uso único. Uma política antiga `project_auto` e tratada como Manual; não dispensa essa confirmação.
-- Hermes pode usar as ferramentas configuradas na própria instalação e não fica restrito à pasta de trabalho inicial. Sua execução MCP fica desativada por padrão e exige aprovação no chat e no painel por chamada. Para habilitar conscientemente, defina `$env:CODEXBRIDGE_ENABLE_HERMES_EXECUTION = '1'` no PowerShell antes de executar `Start.cmd`; revise antes as ferramentas e permissões do Hermes. Sem essa variável, as ferramentas de execução Hermes ficam ocultas e chamadas diretas são recusadas.
-- `npm run typecheck` e `npm run build` executam scripts do `package.json` do projeto escolhido. O npm também pode executar scripts pre/post e código de dependências. A aprovação e específica, mas esses comandos rodam com as permissões do usuário e sem sandbox separado; execute apenas em projetos confiáveis.
+- Hermes pode usar ferramentas configuradas na instalacao dele e nao fica confinado a pasta selecionada. A execucao de tarefas Hermes fica desativada por padrao e o onboarding nao recomenda habilita-la. Se o operador decidir habilita-la, revise as ferramentas e permissoes do Hermes, defina `$env:CODEXBRIDGE_ENABLE_HERMES_EXECUTION = '1'` no PowerShell antes de iniciar `Start.cmd`, e reinicie o adapter. Cada tarefa continua exigindo aprovacao no chat e no painel. A flag nao cria sandbox do sistema operacional.
+- `codex_execute_and_validate` e as tarefas Hermes nao iniciam scripts npm automaticamente. `codex_run_typecheck` e `codex_build_project` sao fluxos separados: exibem o script, o hash de `package.json`, o caminho do projeto e o aviso; o usuario precisa marcar um aceite explicito antes da aprovacao local. npm pode executar o script escolhido, scripts pre/post e codigo de dependencias com as permissoes da conta, sem sandbox separado. Revise `package.json` e o lockfile e use somente projetos confiaveis.
 - Processos filhos recebem apenas variáveis básicas de sistema e caminhos locais necessários; tokens e variáveis arbitrárias do processo pai não são copiados deliberadamente. CLIs devem usar seus mecanismos locais de autenticação (por exemplo, o perfil do Codex). Integrações que dependam de uma chave somente em variável de ambiente podem não funcionar no processo filho.
-- O servidor HTTP fica vinculado a `127.0.0.1` e não autentica cada processo local. Proteções contra CSRF/Host reduzem alguns ataques vindos de páginas web, mas não defendem contra outro processo ou malware executado pela mesma conta. Não exponha a porta por túnel/proxy sem uma camada independente de autenticação e controle de acesso. Túneis podem tornar o endpoint acessível remotamente conforme a configuração; valide essa exposição manualmente.
+- O endpoint HTTP MCP fica em `127.0.0.1` e exige `X-CodexBridge-Token` em pedidos POST/DELETE. Um token aleatorio de 256 bits fica em `%LOCALAPPDATA%\CodexBridge\auth\mcp-token` no Windows ou `~/.codexbridge/auth/mcp-token` nos demais sistemas; `CODEXBRIDGE_MCP_TOKEN_FILE` permite escolher outro arquivo local. `Tunnel.cmd` carrega o token no ambiente do processo e o tunnel-client envia o cabecalho declarado no perfil YAML, sem gravar o valor no perfil. Use `stdio.mjs` para clientes MCP locais; clientes HTTP diretos precisam enviar o cabecalho. Os perfis tunnel gerados devem conter somente o endpoint CodexBridge, pois os cabecalhos estaticos se aplicam a todos os destinos MCP daquele perfil. A autenticacao reduz acesso por clientes sem o token, mas nao protege contra malware da mesma conta, que pode ler dados do usuario. Dashboard e paginas de aprovacao seguem apenas em loopback e nao sao protegidos contra processos da mesma conta; nao os exponha por proxy.
 
 - Antes de chamar uma ferramenta que inicia escrita, apresente no chat um resumo curto em português com executor, pasta, ação/modelo e validação, e aguarde aprovação explícita do usuário. Respeite também qualquer diálogo nativo de confirmação do ChatGPT. A página local continua sendo uma aprovação adicional, específica e de uso único: o servidor não recebe prova verificável da confirmação dada no chat ou no diálogo do ChatGPT.
 - A pasta informada ao iniciar o adapter é apenas um padrão. Cada tarefa pode selecionar outra pasta existente em `project_directory`; o Codex recebe `read-only` para análise ou `workspace-write` após a aprovação aplicável. Confira o caminho e as permissões locais antes de executar.
