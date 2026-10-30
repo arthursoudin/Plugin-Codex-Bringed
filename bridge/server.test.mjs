@@ -244,18 +244,21 @@ function autoPolicy(overrides = {}) {
 }
 const fakeRunner = async () => ({ state: 'completed', result: 'fixture runner success', error: '', durationMs: 1, startedAt: new Date().toISOString() });
 
-test('project-auto policy approves a Codex task, then permits one explicit execution', async () => {
+test('legacy project_auto policy still requires one-time local proof', async () => {
   const policy = autoPolicy();
   const dependencies = { projectPolicySnapshot: project => project && fs.realpathSync.native(project).toLowerCase() === policy.identity.realpath.toLowerCase() ? policy : null, runCodex: fakeRunner };
   const prepared = await callTool('codex_prepare_task', { task: 'Update a harmless fixture' }, dependencies); generated.add(prepared.task_id);
-  assert.equal(prepared.approval, 'auto_approved_by_project_policy');
-  assert.equal(prepared.executed, false);
+  assert.equal(prepared.approval, 'awaiting_local_approval');
+  assert.equal(prepared.decision_basis, 'local_task_approval');
+  await assert.rejects(callTool('codex_execute_approved', { task_id: prepared.task_id, approval_phrase: prepared.approval_phrase }, dependencies), /local/i);
+  const approval = approvals.get(prepared.task_id);
+  fs.writeFileSync(path.join(path.dirname(LOCK_PATH), 'approvals', prepared.task_id + '.approved.json'), JSON.stringify({ phrase_digest: crypto.createHash('sha256').update(approval.phrase).digest('hex'), expiresAt: approval.expiresAt }), { mode: 0o600 });
   const result = await callTool('codex_execute_approved', { task_id: prepared.task_id, approval_phrase: prepared.approval_phrase }, dependencies);
   assert.equal(result.state, 'completed');
-  await assert.rejects(callTool('codex_execute_approved', { task_id: prepared.task_id, approval_phrase: prepared.approval_phrase }, dependencies), /não preparada|aprovação inexistente/i);
+  await assert.rejects(callTool('codex_execute_approved', { task_id: prepared.task_id, approval_phrase: prepared.approval_phrase }, dependencies), /n[a??]o preparada|aprova/i);
 });
 
-test('project-auto approval fails closed after policy revision, revocation, or identity change', async () => {
+test('legacy project_auto tasks fail closed after policy revision or identity change', async () => {
   for (const change of [
     policy => ({ ...policy, revision: policy.revision + 1 }),
     policy => ({ ...policy, level: 'manual', revision: policy.revision + 1 }),
@@ -270,13 +273,15 @@ test('project-auto approval fails closed after policy revision, revocation, or i
   }
 });
 
-test('project-auto tasks expire and cannot replay', async () => {
+test('legacy project policy tasks expire and cannot replay', async () => {
   const policy = autoPolicy();
   const dependencies = { projectPolicySnapshot: project => project && fs.realpathSync.native(project).toLowerCase() === policy.identity.realpath.toLowerCase() ? policy : null, runCodex: fakeRunner };
   const expired = await callTool('codex_prepare_task', { task: 'Update an expired fixture' }, dependencies); generated.add(expired.task_id);
   approvals.get(expired.task_id).expiresAt = Date.now() - 1;
   await assert.rejects(callTool('codex_execute_approved', { task_id: expired.task_id, approval_phrase: expired.approval_phrase }, dependencies), /vencida/i);
   const replay = await callTool('codex_prepare_task', { task: 'Update a replay fixture' }, dependencies); generated.add(replay.task_id);
+  const approval = approvals.get(replay.task_id);
+  fs.writeFileSync(path.join(path.dirname(LOCK_PATH), 'approvals', replay.task_id + '.approved.json'), JSON.stringify({ phrase_digest: crypto.createHash('sha256').update(approval.phrase).digest('hex'), expiresAt: approval.expiresAt }), { mode: 0o600 });
   const first = await callTool('codex_execute_approved', { task_id: replay.task_id, approval_phrase: replay.approval_phrase }, dependencies);
   assert.equal(first.state, 'completed');
   await assert.rejects(callTool('codex_execute_approved', { task_id: replay.task_id, approval_phrase: replay.approval_phrase }, dependencies), /não preparada|aprovação inexistente/i);

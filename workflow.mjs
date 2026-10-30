@@ -8,17 +8,19 @@ import { loadRoutingSettings, createRoutingSnapshot, buildExecutorArgv, evaluate
 import { prepareMcpSetup } from './mcp-setup.mjs';
 import { runtimeInfo } from './runtime-info.mjs';
 import { findCatalogProjects, PROJECT_CATALOG_CHECKED_AT } from './project-catalog.mjs';
+import { createChildEnvironment, terminateProcessTree } from './process-safety.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const checks = ['typecheck', 'build'];
 const HERMES_VERSION_CACHE_MS = 30_000;
 const MAX_RETAINED_VALIDATIONS = 100;
 const MAX_PENDING_VALIDATIONS = 50;
+const HERMES_EXECUTION_TOOLS = new Set(['hermes_ask', 'hermes_prepare_task', 'hermes_execute_approved']);
 const additions = annotateTools([
   { name: 'codex_model_session', description: 'Define, consulta ou encerra a política de modelos de todas as conversas deste adapter até reiniciar. Alterações invalidam tarefas pendentes da revisão anterior.', inputSchema: { type: 'object', properties: { action: { type: 'string', enum: ['set', 'get', 'clear'] }, session_id: { type: 'string' }, floor_model: { type: 'string' }, max_model: { type: 'string' }, max_effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] } }, required: ['action'], additionalProperties: false } },
   { name: 'codex_model_evaluate', description: 'Avalia uma tarefa localmente e mostra o que mudará, modelo e esforço sugeridos. Respeita o modelo mestre e o esforço máximo salvos em Roteamento. Não executa a tarefa.', inputSchema: { type: 'object', properties: { task: { type: 'string', minLength: 1, maxLength: 12000 }, task_class: { type: 'string', enum: ['simple', 'complex'] }, session_id: { type: 'string' } }, required: ['task'], additionalProperties: false } },
-  { name: 'codex_route_prepare_task', description: 'Prepara uma tarefa com as preferências de roteamento ativas e registra executor, modelo, pasta e validação. Se ausentes ou desligadas, usa Codex padrão. Para Codex com política Automática válida, retorna auto_approved_by_project_policy e dispensa clique local por tarefa. Antes de executar, mostre resumo curto em português, aguarde aprovação explícita no chat e informe a pasta existente em project_directory.', inputSchema: { type: 'object', properties: { task: { type: 'string', minLength: 1, maxLength: 12000 }, task_class: { type: 'string', enum: ['simple', 'complex'] }, session_id: { type: 'string' }, project_directory: { type: 'string', description: 'Pasta existente informada explicitamente para esta tarefa.' } }, required: ['task'], additionalProperties: false } },
-  { name: 'codex_route_execute_approved', description: 'Só chame depois de resumir em português executor, pasta, ação/modelo e validação e receber aprovação explícita do usuário no chat, respeitando qualquer confirmação nativa do ChatGPT. Se a preparação retornar auto_approved_by_project_policy para Codex, não exija clique na página local; a política do projeto autoriza essa etapa. Nos demais casos exige aprovação local de uso único. Executa o snapshot uma vez.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, approval_phrase: { type: 'string' } }, required: ['task_id', 'approval_phrase'], additionalProperties: false } },
+  { name: 'codex_route_prepare_task', description: 'Prepara uma tarefa com as preferências de roteamento ativas e registra executor, modelo, pasta e validação. Se ausentes ou desligadas, usa Codex padrão. Execução Codex de escrita sempre exige aprovação local de uso único. Antes de executar, mostre resumo curto em português, aguarde aprovação explícita no chat e informe a pasta existente em project_directory.', inputSchema: { type: 'object', properties: { task: { type: 'string', minLength: 1, maxLength: 12000 }, task_class: { type: 'string', enum: ['simple', 'complex'] }, session_id: { type: 'string' }, project_directory: { type: 'string', description: 'Pasta existente informada explicitamente para esta tarefa.' } }, required: ['task'], additionalProperties: false } },
+  { name: 'codex_route_execute_approved', description: 'Só chame depois de resumir em português executor, pasta, ação/modelo e validação e receber aprovação explícita do usuário no chat, respeitando qualquer confirmação nativa do ChatGPT. A execução sempre exige aprovação local de uso único. Executa o snapshot uma vez.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, approval_phrase: { type: 'string' } }, required: ['task_id', 'approval_phrase'], additionalProperties: false } },
   { name: 'hermes_status', description: 'Verifica se o Hermes CLI está instalado e responde. Resposta bem-sucedida de versão é reutilizada por até 30 segundos e entre chamadas simultâneas; erro e timeout são consultados novamente.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'hermes_ask', description: 'Prepara um pedido one-shot ao Hermes e N\u00c3O o envia. Mostre ao usu\u00e1rio o pedido completo, avise que o Hermes pode usar as ferramentas dispon\u00edveis e que a pasta selecionada n\u00e3o limita essas ferramentas. Aguarde aprova\u00e7\u00e3o expl\u00edcita do usu\u00e1rio no chat e tamb\u00e9m na p\u00e1gina local approval_url; s\u00f3 ent\u00e3o chame hermes_execute_approved com task_id e approval_phrase. N\u00e3o afirme que a consulta \u00e9 somente de leitura.', inputSchema: { type: 'object', properties: { prompt: { type: 'string', maxLength: 12000 }, project_directory: { type: 'string' } }, required: ['prompt'], additionalProperties: false } },
   { name: 'hermes_environment_check', description: 'Verifica CLI Hermes, identidade do projeto e scripts de validação disponíveis. Reutiliza por até 30 segundos a consulta de versão bem-sucedida feita por hermes_status; erro e timeout levam a uma nova tentativa.', inputSchema: { type: 'object', properties: { project_directory: { type: 'string' } }, additionalProperties: false } },
@@ -42,7 +44,7 @@ const additions = annotateTools([
   { name: 'codexbridge_project_advisor', description: 'Consulta somente o catálogo local e estático de projetos opcionais do CodexBridge. Informe project_id para detalhes exatos ou goal para recomendações relacionadas. Explique os resultados ao usuário em português simples, destaque limitações, compatibilidade não verificada e perigos concretos, e diga claramente quando não houver recomendação compatível. Não baixe, instale, conecte, inicie ou execute projetos; não busque URLs arbitrárias nem acesse a rede.', inputSchema: { type: 'object', properties: { project_id: { type: 'string', minLength: 1, maxLength: 100, description: 'ID curto do catálogo (por exemplo ffmpeg-skill) ou nome exato.' }, goal: { type: 'string', minLength: 1, maxLength: 500, description: 'Necessidade em linguagem natural para comparar com nomes, descrições e tags do catálogo local.' } }, additionalProperties: false } },
   { name: 'codex_project_note', description: 'Anota informação útil para próximas conversas na pasta selecionada; pastas sem cadastro também são aceitas. Não inclua chaves, senhas ou tokens.', inputSchema: { type: 'object', properties: { note: { type: 'string', description: 'Informação objetiva sobre organização, decisões ou próximos passos (até 2000 caracteres).' }, project_directory: { type: 'string' } }, required: ['note'], additionalProperties: false } },
   { name: 'codex_approval_status', description: 'Consulta se a pessoa aprovou a tarefa na página local. Não executa a tarefa.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, project_directory: { type: 'string' } }, required: ['task_id'], additionalProperties: false } },
-  { name: 'codex_execute_and_validate', description: 'Só chame depois de resumir em português executor, pasta, ação/modelo e validação e receber aprovação explícita do usuário no chat. Respeite qualquer confirmação nativa do ChatGPT. Se a preparação retornou auto_approved_by_project_policy, execute sem exigir clique local; em outros casos, exige aprovação local de uso único. Inicia uma execução única e não contorna limites do Codex ou bloqueios externos.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, approval_phrase: { type: 'string' } }, required: ['task_id', 'approval_phrase'], additionalProperties: false } },
+  { name: 'codex_execute_and_validate', description: 'Só chame depois de resumir em português executor, pasta, ação/modelo e validação e receber aprovação explícita do usuário no chat. Respeite qualquer confirmação nativa do ChatGPT. A execução sempre exige aprovação local de uso único. O servidor n\u00e3o recebe prova verific\u00e1vel da aprovacao no chat. Inicia uma execução única e não contorna limites do Codex ou bloqueios externos.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, approval_phrase: { type: 'string' } }, required: ['task_id', 'approval_phrase'], additionalProperties: false } },
   { name: 'codex_validation_result', description: 'Consulta os resultados automáticos de typecheck e build para uma tarefa aprovada.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, project_directory: { type: 'string' } }, required: ['task_id'], additionalProperties: false } },
   { name: 'codex_list_tasks', description: 'Lista estados de tarefas do projeto selecionado ou padrão, inclusive após reiniciar o servidor.', inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 50 }, project_directory: { type: 'string' } }, additionalProperties: false } },
   { name: 'codex_task_progress', description: 'Consulta estado real conhecido da tarefa, aprovação e validação pelo ID, inclusive registros persistidos. Não executa nada.', inputSchema: { type: 'object', properties: { task_id: { type: 'string' }, project_directory: { type: 'string' } }, required: ['task_id'], additionalProperties: false } },
@@ -64,7 +66,7 @@ const html = (res, status, body, cookie) => res.writeHead(status, {
 }).end(body);
 const page = (title, content) => `<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(title)}</title><style>body{font:16px system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;line-height:1.5;background:#14171d;color:#f2f3f5}a{color:#a8d5ff}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:1rem;background:#252b35;border-radius:.5rem}button{font:inherit;padding:.7rem 1.2rem;border:0;border-radius:.5rem;background:#a9eec1;color:#111;cursor:pointer}small{color:#b7c1d0}</style><main id="main-content"><h1>${escapeHtml(title)}</h1>${content}</main></html>`;
 
-export function createWorkflow(bridge, { baseUrl, dashboardRoot, settingsFile, projectConfig, checkRunner, hermesRunner }) {
+export function createWorkflow(bridge, { baseUrl, dashboardRoot, settingsFile, projectConfig, checkRunner, hermesRunner, enableHermesExecution = false }) {
   const sessions = new Map();
   let modelPolicy = null;
   const validations = new Map();
@@ -148,15 +150,14 @@ export function createWorkflow(bridge, { baseUrl, dashboardRoot, settingsFile, p
     if (hermesRunner) return hermesRunner(args, timeoutMs, projectPath);
     return new Promise(resolve => {
       if (!fs.existsSync(hermesExe)) return resolve({ state: 'failed', error: 'Hermes CLI não encontrado.' });
-      const env = { ...process.env };
-      delete env.CONTROL_PLANE_API_KEY;
-      const child = spawn(hermesExe, args, { ...(projectPath ? { cwd: projectPath } : {}), env, windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      const env = createChildEnvironment();
+      const child = spawn(hermesExe, args, { ...(projectPath ? { cwd: projectPath } : {}), env, detached: process.platform !== 'win32', windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       const append = chunk => { output = (output + chunk.toString()).slice(-8000); };
       child.stdout?.on('data', append); child.stderr?.on('data', append);
       let done = false;
       const finish = result => { if (done) return; done = true; clearTimeout(timer); resolve(result); };
-      const timer = setTimeout(() => { try { child.kill(); } catch {} finish({ state: 'timeout', output }); }, timeoutMs);
+      const timer = setTimeout(() => { terminateProcessTree(child); finish({ state: 'timeout', output }); }, timeoutMs);
       child.on('error', error => finish({ state: 'failed', error: bridge.safeText(error.message, 1000), output }));
       child.on('close', code => finish({ state: code === 0 ? 'completed' : 'failed', exit_code: code, output: bridge.safeText(output, 8000) }));
     });
@@ -199,7 +200,6 @@ export function createWorkflow(bridge, { baseUrl, dashboardRoot, settingsFile, p
     if (task?.state === 'running' || task?.state === 'completed' || task?.state === 'failed') return 'consumed';
     if (!task || task.state !== 'prepared' || !approval || approval.used) return 'unavailable';
     if (Date.now() > approval.expiresAt) return 'expired';
-    if (approval.auto && task.executor === 'codex') { try { requireProjectIdentity(id); return 'approved'; } catch { return 'invalid_policy'; } }
     const proofPath = path.join(approvalDir, `${id}.approved.json`);
     if (!fs.existsSync(proofPath)) return 'pending';
     try {
@@ -314,17 +314,15 @@ export function createWorkflow(bridge, { baseUrl, dashboardRoot, settingsFile, p
     return new Promise(resolve => {
       const npmCli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
       if (!fs.existsSync(npmCli)) return resolve({ script, state: 'failed', error: 'npm-cli.js não encontrado junto ao Node' });
-      const env = { ...process.env, NO_COLOR: '1' };
-      delete env.CONTROL_PLANE_API_KEY;
-      env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${env.PATH || env.Path || ''}`;
-      const child = spawn(process.execPath, [npmCli, 'run', script], { cwd: project, env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const env = createChildEnvironment({ ci: true, prependPath: path.dirname(process.execPath) });
+      const child = spawn(process.execPath, [npmCli, 'run', script], { cwd: project, env, detached: process.platform !== 'win32', shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       const append = chunk => { output = (output + chunk.toString()).slice(-4000); };
       child.stdout?.on('data', append);
       child.stderr?.on('data', append);
       let done = false;
       const finish = result => { if (done) return; done = true; clearTimeout(timer); resolve(result); };
-      const timer = setTimeout(() => { child.kill(); finish({ script, state: 'timeout', output: bridge.safeText(output, 4000) }); }, 180_000);
+      const timer = setTimeout(() => { terminateProcessTree(child); finish({ script, state: 'timeout', output: bridge.safeText(output, 4000) }); }, 180_000);
       child.on('error', error => finish({ script, state: 'failed', error: bridge.safeText(error.message, 500) }));
       child.on('close', code => finish({ script, state: code === 0 ? 'passed' : 'failed', exit_code: code, output: bridge.safeText(output, 4000) }));
     });
@@ -352,6 +350,7 @@ export function createWorkflow(bridge, { baseUrl, dashboardRoot, settingsFile, p
   }
 
   async function call(name, args) {
+    if (HERMES_EXECUTION_TOOLS.has(name) && !enableHermesExecution) throw new Error('Hermes execution is disabled by default. Enable it only after reviewing the tools and permissions available to Hermes.');
     pruneWorkflowState();
     if (name === 'codex_model_session') {
       if (args?.action === 'set') {
@@ -374,7 +373,7 @@ export function createWorkflow(bridge, { baseUrl, dashboardRoot, settingsFile, p
       const stored = dashboard.get(id), snapshot = task?.routing_snapshot;
       if (!task || !snapshot || JSON.stringify(snapshot) !== JSON.stringify(stored?.routing_snapshot)) throw new Error('Snapshot de roteamento ausente ou divergente. Prepare outra tarefa.');
       if (snapshot.executor !== task.executor || task.state !== 'prepared' || !approval || approvalState(id) !== 'approved') throw new Error('Aprovação inválida, vencida ou consumida. Prepare nova tarefa.');
-      if (!(approval.auto && snapshot.executor === 'codex') && !fs.existsSync(path.join(approvalDir, `${id}.approved.json`))) throw new Error('Esta tarefa exige aprovação local de uso único.');
+      if (!fs.existsSync(path.join(approvalDir, `${id}.approved.json`))) throw new Error('Esta tarefa exige aprovação local de uso único.');
       requireProjectIdentity(id);
       const expected = Buffer.from(approval.phrase), supplied = Buffer.from(typeof args.approval_phrase === 'string' ? args.approval_phrase : '');
       if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) throw new Error('Frase de aprovação inválida.');
@@ -704,8 +703,8 @@ export function createWorkflow(bridge, { baseUrl, dashboardRoot, settingsFile, p
         executors: { codex: codexDetected ? 'arquivo encontrado; funcionamento não verificado' : 'não detectado', hermes: hermesDetected ? 'arquivo encontrado; funcionamento não verificado' : 'não detectado' },
         fallback_policy: {
           automatic_switch: false,
-          if_executor_unavailable: 'Avise qual executor não foi encontrado. Se o outro estiver disponível, ofereça-o como opção e prepare uma nova tarefa somente após escolha explícita do usuário.',
-          if_failed_or_timed_out: 'Consulte progresso, logs e validação. Considere que pode ter havido alteração parcial; não repita nem troque executor antes de revisar o resultado.',
+          if_executor_unavailable: 'Avise qual executor n\u00e3o foi encontrado. Se o outro estiver dispon\u00edvel, ofere\u00e7a-o como op\u00e7\u00e3o e prepare uma nova tarefa somente ap\u00f3s escolha expl\u00edcita do usu\u00e1rio.',
+          if_failed_or_timed_out: 'Consulte progresso, logs e valida\u00e7\u00e3o. Considere altera\u00e7\u00e3o parcial; n\u00e3o repita nem troque executor antes de revisar o resultado.',
         },
         setup_steps: [
           'Passo 1: esta chamada MCP chegou ao bridge. Se você usa ChatGPT remoto, confira o tunnel separadamente; se usa stdio local, o tunnel pode ser desnecessário. Nunca cole a chave no chat.',
@@ -754,16 +753,16 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
         ...(savingsPreferences.selected.includes('skills') ? ['O usuário permitiu consultar https://skills.sh/ para encontrar skills úteis à tarefa. Pesquise só quando uma skill específica puder ajudar; apresente origem e finalidade antes de recomendar. Nunca instale nem execute uma skill encontrada sem autorização separada.'] : []),
       ];
       return {
-        purpose: 'Ajuda e diagnósticos gerais funcionam sem projeto. Cada tarefa em arquivos informa explicitamente uma pasta existente e exige aprovação explícita no chat; a página local é dispensada somente para tarefas Codex cobertas pela política Automática do projeto.',
+        purpose: 'Ajuda e diagnosticos gerais funcionam sem projeto. Toda tarefa de escrita exige aprovacao explicita no chat e aprovacao local de uso unico. A pagina local nunca e dispensada por politica salva.',
         startup: ['Se a conexão estiver incerta, consulte codex_status e codex_plugin_setup.', 'Sem projeto padrão, você ainda pode ler guias, capacidades e diagnósticos gerais.', 'Para cada tarefa em arquivos, informe explicitamente em project_directory a pasta existente; confira identidade e README antes de preparar a tarefa. O cadastro no dashboard é opcional.'],
         token_savings: { selected: savingsPreferences.selected, skipped: savingsPreferences.skipped, graphify_guidance: graphifyGuidance, task_guidance: taskToolGuidance, dashboard_url: `${baseUrl}/dashboard/token-savings`, impact_url: `${baseUrl}/dashboard/impact` },
         other_mcp_connections: ['Outros MCPs podem ser conectados ao mesmo ChatGPT separadamente em Configurações > Apps/Conectores.', 'Use as instruções, o endereço e a autenticação fornecidos pelo responsável de cada MCP; revise suas permissões na tela do ChatGPT.', 'Este plugin não configura nem controla outros MCPs e não recebe automaticamente as ferramentas deles.', 'Cada pessoa precisa manter suas próprias credenciais e configuração de tunnel; nunca compartilhe chaves, tokens ou IDs de tunnel.'],
-        chat_permission_flow: ['Antes de preparar uma tarefa de escrita, mostre um resumo curto em português nativo com executor, pasta, ação/modelo e validação; depois da preparação, confirme que o escopo retornado corresponde ao resumo.', 'Aguarde aprovação explícita do usuário no chat antes da execução; o pedido inicial não substitui a confirmação do resumo preparado. O servidor não recebe prova verificável do sim no chat.', 'Respeite qualquer confirmação nativa do ChatGPT quando exibida; nunca tente contorná-la.', 'Se a preparação retornar approval=auto_approved_by_project_policy para Codex, não peça aprovação nem clique na página local: após o sim no chat, chame a ferramenta de execução com a frase exata. Se retornar awaiting_local_approval, aguarde a página local. Hermes continua exigindo aprovação local.'],
-        codex_workflow: ['Se o usuário definir limites globais para o adapter, chame codex_model_session com action=set. A política vale em novas tarefas de todas as conversas até reiniciar; action=get consulta e action=clear encerra. Mostre o modelo e o esforço escolhidos antes de executar.','Prepare com codex_prepare_task e informe explicitamente a pasta existente da tarefa.', 'Mostre executor, pasta, ação/modelo e validação em resumo curto; aguarde aprovação explícita no chat e respeite qualquer confirmação nativa do ChatGPT.', 'Se approval for auto_approved_by_project_policy, execute uma vez com codex_execute_and_validate após o sim no chat, sem pedir clique local. Caso contrário, aguarde a aprovação local antes de executar.', 'Consulte progresso, logs e validação. Diga o que passou e o que não foi executado.'],
-        hermes_workflow: ['Prepare com hermes_prepare_task e informe explicitamente a pasta existente da tarefa.', 'Mostre executor, pasta, ação/modelo e validação em resumo curto; aguarde aprovação explícita no chat e respeite a confirmação nativa do ChatGPT.', 'Depois da aprovação no chat, siga a aprovação local de uso único; execute uma vez com hermes_execute_approved e a frase exata retornada.', 'Consulte progresso, logs e validação.', 'hermes_ask prepara um pedido one-shot, apresenta o texto completo e exige aprovacao local de uso unico por chamada; pode usar ferramentas e nao e leitura garantida.'],
+        chat_permission_flow: ['Antes do preparo, apresente resumo curto com executor, pasta, a\u00e7\u00e3o/modelo e valida\u00e7\u00e3o.', 'Aguarde aprova\u00e7\u00e3o expl\u00edcita do usu\u00e1rio no chat e respeite qualquer confirma\u00e7\u00e3o nativa do ChatGPT.', 'Confira o resumo preparado e aguarde aprova\u00e7\u00e3o local de uso \único em approval_url.', 'O servidor n\u00e3o recebe prova verific\u00e1vel do sim no chat; a aprova\u00e7\u00e3o local continua obrigat\u00f3ria.'],
+        codex_workflow: ['Defina limites de modelo com codex_model_session quando solicitado.', 'Prepare com codex_prepare_task e informe a pasta existente em project_directory.', 'Mostre executor, pasta, modelo e validacao; aguarde o sim no chat e a aprovacao local.', 'Execute uma vez com codex_execute_and_validate usando a frase exata; consulte progresso e resultados.'],
+        hermes_workflow: ['A execucao Hermes fica desativada por padrao e requer habilitacao explicita na inicializacao.', 'Habilite somente apos revisar as ferramentas configuradas, definindo CODEXBRIDGE_ENABLE_HERMES_EXECUTION=1 antes de iniciar o adapter.', 'Quando habilitada, Hermes pode usar ferramentas configuradas e nao fica confinado a project_directory; avalie esse alcance antes de cada tarefa.', 'A execucao exige resumo, aprovacao no chat, aviso sobre ferramentas e aprovacao local por chamada.', 'hermes_ask mostra o pedido completo; nunca o descreva como somente leitura.'],
         fallback_policy: ['Nunca troque de executor ou repita uma escrita automaticamente.', 'Se um executor não estiver disponível, diga isso e ofereça o outro como escolha; prepare outra tarefa apenas após escolha explícita.', 'Se houver falha, timeout ou reinício, consulte progresso e logs primeiro. Considere possível alteração parcial e verifique os arquivos antes de tentar de novo.', 'Nao use hermes_ask como fallback automatico; mostre o pedido e aguarde as aprovacoes explicitas no chat e no painel local.'],
-        approval_checklist: ['A pessoa deve conferir executor, pasta, ação/modelo e validação antes de aprovar explicitamente o resumo no chat.', 'Se algo estiver diferente do pedido, não execute; prepare outra tarefa.', 'Respeite qualquer confirmação nativa do ChatGPT quando exibida.', 'A aprovação local é obrigatória em Manual/Assistida e para Hermes; em Automática, só é dispensada quando a resposta da preparação indicar auto_approved_by_project_policy para Codex. A frase continua vinculada a uma tarefa e só pode ser usada uma vez.'],
-        constraints: ['Nunca exponha nem peça chaves de API no chat, resultados, notas ou argumentos.', 'Não diga que hermes_ask é somente leitura; ele pode usar ferramentas e ignorar aprovações internas.', 'Não contorne aprovações do ChatGPT, do sistema operacional ou da pessoa.', 'Para cada tarefa em arquivos, informe explicitamente uma pasta existente e confirme a identidade. O cadastro no dashboard é opcional para organizar projetos, mas necessário para políticas automáticas.', 'A política automática aprova apenas tarefas Codex preparadas para o projeto autorizado, com identidade e revisão ainda válidas. Ela não vale para Hermes, outra pasta, validações separadas nem após alteração/revogação da política.', 'Após reinício, trate trabalho incompleto como interrompido e revise antes de preparar uma nova tarefa.', ...taskToolGuidance],
+        approval_checklist: ['Confira executor, pasta, modelo e validacao no resumo.', 'Se algo divergir do pedido, nao execute.', 'A aprovacao local de uso unico e obrigatoria para toda tarefa de escrita.', 'A frase pertence a uma tarefa e so pode ser usada uma vez.'],
+        constraints: ['Nunca exponha nem solicite chaves, tokens ou senhas.', 'Hermes pode usar ferramentas configuradas e nao e uma operacao somente de leitura; a execucao fica desativada por padrao.', 'Nao contorne confirmacoes do cliente ou do sistema operacional.', 'Informe uma pasta existente em project_directory e confira sua identidade.', 'Politicas de projeto nao dispensam aprovacao local nem autorizam execucao automaticamente.', 'Depois de reiniciar, trate tarefas incompletas como interrompidas e confira possiveis alteracoes.', ...taskToolGuidance],
       };
     }
     if (name === 'codex_plugin_capabilities') {
@@ -773,10 +772,10 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
         groups: [
           { name: 'Setup and guidance', tools: ['codex_plugin_setup', 'codex_mcp_configurator', 'codex_tunnel_setup_prompt', 'codex_plugin_instructions', 'codex_plugin_capabilities', 'codex_bridge_guide', 'codex_configure_project', 'codex_project_readme', 'codex_project_summary', 'codex_project_note'], token_savings_page: `${baseUrl}/dashboard/token-savings`, impact_page: `${baseUrl}/dashboard/impact`, token_savings_options: ['RTK', 'Headroom', 'Graphify'] },
           { name: 'Codex executor', tools: ['codex_status', 'codex_model_session', 'codex_model_evaluate', 'codex_run_readonly', 'codex_prepare_task', 'codex_route_prepare_task', 'codex_approval_status', 'codex_execute_and_validate', 'codex_route_execute_approved', 'codex_task_progress', 'codex_task_logs', 'codex_validation_result', 'codex_cancel_task'] },
-          { name: 'Hermes executor', tools: ['hermes_status', 'hermes_environment_check', 'hermes_ask', 'hermes_prepare_task', 'hermes_approval_status', 'hermes_execute_approved', 'hermes_task_progress', 'hermes_task_logs', 'hermes_validation_result'] },
+          { name: 'Hermes executor', tools: enableHermesExecution ? ['hermes_status', 'hermes_environment_check', 'hermes_ask', 'hermes_prepare_task', 'hermes_approval_status', 'hermes_execute_approved', 'hermes_task_progress', 'hermes_task_logs', 'hermes_validation_result'] : ['hermes_status', 'hermes_environment_check'] },
           { name: 'Diagnostics and checks', tools: ['codex_environment_check', 'codex_execution_health', 'codex_list_tasks', 'codex_run_typecheck', 'codex_build_project', 'codex_test_report', 'hermes_execution_health', 'hermes_list_tasks'] },
         ],
-        approval: 'Codex requires local approval in Manual/Assisted mode; project_auto skips that local page only for eligible Codex tasks after explicit chat approval. Hermes always requires local approval. ChatGPT native confirmations remain under host control.',
+        approval: 'Every Codex write task requires one-time local approval. Hermes execution is disabled by default and, when explicitly enabled, also requires local approval; its configured tools may access outside the selected project. Respect native client confirmations.',
         validation: 'Successful write tasks trigger npm run typecheck and npm run build. Electron tests are not run automatically.',
         limits: ['O transporte MCP escolhido precisa estar acessível: ChatGPT remoto usa adapter e tunnel; um cliente stdio local pode dispensar o tunnel.', 'Cadastrar um projeto no dashboard não concede permissão adicional ao executor.', 'O plugin não contorna limites de modelo, sistema operacional, tunnel ou aprovação.'],
         project_requirement: { optional_for: ['connection and environment status', 'setup guidance', 'capabilities and bridge guide'], required_for: ['an existing folder for file tasks; dashboard registration only for project approval policies', 'project README and notes'] },
@@ -825,15 +824,19 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
   async function handle(message, originalHandle) {
     if (message.method === 'tools/list') {
       const reply = await originalHandle(message);
+      const availableAdditions = additions.filter(tool => enableHermesExecution || !HERMES_EXECUTION_TOOLS.has(tool.name));
       const overridden = new Set(additions.map(tool => tool.name));
       reply.result.tools = [...reply.result.tools.filter(tool => !overridden.has(tool.name)).map(tool => {
-        if (tool.name === 'codex_prepare_task') return { ...tool, description: 'Prepara uma tarefa de escrita para o projeto informado. Se a resposta indicar auto_approved_by_project_policy, a política Automática válida dispensa clique local para esta tarefa Codex; caso contrário, aguarde a aprovação local. Resuma executor, pasta, ação/modelo e validação em português e aguarde o sim explícito no chat antes de executar. Informe project_directory quando não houver pasta padrão.' };
+        if (tool.name === 'codex_prepare_task') return { ...tool, description: 'Prepara uma tarefa de escrita para a pasta informada. A execucao sempre exige aprovacao explicita no chat, aprovacao local de uso unico e a frase vinculada a tarefa. Informe project_directory quando nao houver pasta padrao.' };
         return tool;
-      }), ...additions];
+      }), ...availableAdditions];
       return reply;
     }
     if (message.method === 'tools/call') {
       const name = message.params?.name;
+      if (HERMES_EXECUTION_TOOLS.has(name) && !enableHermesExecution) {
+        return { jsonrpc: '2.0', id: message.id, result: { isError: true, content: [{ type: 'text', text: 'Execução Hermes desativada por padrão. Revise as ferramentas e permissões do Hermes antes de habilitá-la.' }] } };
+      }
       if (name === 'codexbridge_project_advisor') {
         const args = message.params?.arguments || {};
         if (args.project_id !== undefined && (typeof args.project_id !== 'string' || args.project_id.trim().length > 100)) return { jsonrpc: '2.0', id: message.id, result: { isError: true, content: [{ type: 'text', text: 'project_id deve ter até 100 caracteres.' }] } };
@@ -867,6 +870,7 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
             snapshot = Object.freeze({ ...base, ...(base.executor === 'codex' ? codexEvaluation(prompt.trim(), message.params?.arguments?.task_class) : {}), configured: true });
           }
           if (!snapshot) snapshot = Object.freeze({ task_class: message.params?.arguments?.task_class === 'complex' ? 'complex' : 'simple', executor: 'codex', model: 'padrão atual', effort: 'padrão atual', configured: false, routing_reason: 'Preferências ausentes, inválidas ou desativadas; Codex padrão.' });
+          if (snapshot.executor === 'hermes' && !enableHermesExecution) throw new Error('O roteamento escolheu Hermes, mas a execu\u00e7\u00e3o Hermes est\u00e1 desativada. Ative-a conscientemente ou escolha Codex.');
           let reply;
           if (snapshot.executor === 'codex') {
             reply = await originalHandle({ ...message, params: { ...message.params, name: 'codex_prepare_task', arguments: { task: prompt.trim(), project_directory: message.params?.arguments?.project_directory } } });
@@ -877,13 +881,10 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
             task.routing_snapshot = snapshot;
             task.executor = 'codex';
             const project = dashboard.verifyProject(task.project_directory);
-            const autoApproved = reply.result.structuredContent.approval === 'auto_approved_by_project_policy' && task.decision_basis === 'project_policy';
-            dashboard.save(id, { project_id: task.project_id || (project.ok ? project.project.id : 'unconfigured'), project_directory: task.project_directory, project_identity: task.project_identity, policy_revision: task.policy_revision, decision_basis: task.decision_basis, executor: snapshot.executor, scope: task.scope, prompt: task.prompt, summary: prompt.trim().slice(0, 1000), routing_snapshot: snapshot, state: autoApproved ? 'approved' : 'pending', expires_at: new Date(task.expiresAt).toISOString() });
+            dashboard.save(id, { project_id: task.project_id || (project.ok ? project.project.id : 'unconfigured'), project_directory: task.project_directory, project_identity: task.project_identity, policy_revision: task.policy_revision, decision_basis: task.decision_basis, executor: snapshot.executor, scope: task.scope, prompt: task.prompt, summary: prompt.trim().slice(0, 1000), routing_snapshot: snapshot, state: 'pending', expires_at: new Date(task.expiresAt).toISOString() });
             reply.result.structuredContent.routing_snapshot = snapshot;
-            if (!autoApproved) reply.result.structuredContent.approval_url = `${baseUrl}/approve/${id}`;
-            reply.result.structuredContent.next_step = autoApproved
-              ? 'Após o usuário aprovar este resumo no chat, execute uma vez com codex_route_execute_approved e a frase retornada; não peça clique local.'
-              : 'Após o usuário aprovar este resumo no chat, aguarde também a aprovação local em approval_url e então execute uma vez com codex_route_execute_approved.';
+            reply.result.structuredContent.approval_url = `${baseUrl}/approve/${id}`;
+            reply.result.structuredContent.next_step = 'Apos o sim no chat, aguarde a aprovacao local em approval_url e execute uma vez com codex_route_execute_approved.';
             reply.result.content[0].text = bridge.safeText(JSON.stringify(reply.result.structuredContent), bridge.MAX_RESPONSE);
           } else {
             reply = await call('hermes_prepare_task', { task: prompt.trim(), project_directory: message.params?.arguments?.project_directory });
@@ -929,12 +930,10 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
         const preparedTask = bridge.tasks.get(data.task_id);
         if (directEvaluation) { preparedTask.routing_snapshot = directEvaluation; data.routing_snapshot = directEvaluation; }
         dashboard.save(data.task_id, { project_id: dashboard.projectFor(data.project_directory) || 'unconfigured', project_directory: data.project_directory, project_identity: preparedTask?.project_identity, policy_revision: preparedTask?.policy_revision, decision_basis: preparedTask?.decision_basis, executor: 'codex', scope: preparedTask?.scope, prompt: message.params?.arguments?.task, summary: data.summary, routing_snapshot: directEvaluation, state: 'pending', expires_at: new Date(Date.now() + data.expires_in_seconds * 1000).toISOString() });
-        if (data.approval !== 'auto_approved_by_project_policy') data.approval_url = `${baseUrl}/approve/${data.task_id}`;
+        data.approval_url = `${baseUrl}/approve/${data.task_id}`;
         data.dashboard_url = `${baseUrl}/dashboard`;
         data.project_registered = dashboard.verifyProject(data.project_directory).ok;
-        data.next_step = data.approval === 'auto_approved_by_project_policy'
-          ? 'Após o usuário aprovar este resumo no chat, execute uma vez com codex_execute_and_validate e a frase retornada; não peça clique local.'
-          : 'Após o usuário aprovar este resumo no chat, abra o endereço local, revise e clique para aprovar. Depois use codex_execute_and_validate com a frase retornada.';
+        data.next_step = 'Apos o sim no chat, abra approval_url, revise e aprove localmente; depois execute uma vez com codex_execute_and_validate.';
         reply.result.content[0].text = bridge.safeText(JSON.stringify(data), bridge.MAX_RESPONSE);
       } else if (['codex_execute_approved', 'codex_task_result'].includes(name) && !reply.result?.isError && reply.result?.structuredContent?.task_id) {
         const task = reply.result.structuredContent;

@@ -9,6 +9,7 @@ import { runtimeInfo } from '../runtime-info.mjs';
 import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { openPublicPage } from '../browser-readonly.mjs';
+import { createChildEnvironment, terminateProcessTree } from '../process-safety.mjs';
 
 const TEST_STATE_DIR = process.env.NODE_ENV === 'test' ? process.env.CODEXBRIDGE_TEST_STATE_DIR : '';
 const HERE = path.resolve(TEST_STATE_DIR || path.dirname(fileURLToPath(import.meta.url)));
@@ -229,22 +230,6 @@ function configuredProfile(codexHome = process.env.CODEX_HOME || path.join(HOME,
   } catch { return null; }
 }
 
-function terminateTree(child) {
-  if (!child.pid) return;
-  if (process.platform === 'win32') {
-    const forceDirect = () => { if (child.exitCode === null && child.signalCode === null) { try { child.kill('SIGKILL'); } catch {} } };
-    const fallback = setTimeout(forceDirect, 750);
-    fallback.unref?.();
-    try {
-      const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-      killer.on('error', () => { clearTimeout(fallback); forceDirect(); });
-      killer.on('close', (code) => { clearTimeout(fallback); if (code !== 0) forceDirect(); });
-    } catch { clearTimeout(fallback); forceDirect(); }
-  } else {
-    try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch {} }
-  }
-}
-
 function acquireProjectLock(taskId) {
   const record = JSON.stringify({ task_id: taskId, pid: process.pid, created_at: new Date().toISOString() });
   try { fs.writeFileSync(LOCK_PATH, record, { flag: 'wx', mode: 0o600 }); }
@@ -281,7 +266,7 @@ function runCodex(prompt, mode, taskId, timeoutMs = TASK_TIMEOUT_MS, scriptPath 
   } : null;
   try { child = spawn(process.execPath, [scriptPath, ...cliArgs], {
     cwd: project, windowsHide: true, shell: false, detached: process.platform !== 'win32',
-    env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: createChildEnvironment(), stdio: ['ignore', 'pipe', 'pipe'],
   }); } catch (e) { releaseProjectLock(taskId); throw e; }
   latency.spawn_call = Math.round(performance.now() - spawnRequestedAt);
   const startedAt = new Date().toISOString();
@@ -302,7 +287,7 @@ function runCodex(prompt, mode, taskId, timeoutMs = TASK_TIMEOUT_MS, scriptPath 
     if (activityBuffer.length > 64_000) activityBuffer = '';
   };
   return new Promise((resolve) => {
-    const timer = setTimeout(() => { timedOutTasks.add(taskId); terminateTree(child); }, timeoutMs);
+    const timer = setTimeout(() => { timedOutTasks.add(taskId); terminateProcessTree(child); }, timeoutMs);
     child.once('spawn', () => { spawnConfirmed = performance.now(); });
     child.stdout.on('data', (chunk) => {
       if (firstData === null) firstData = performance.now();
@@ -423,9 +408,9 @@ async function callTool(name, args = {}, dependencies = {}) {
     const projectError = projectConfigured ? null : (AUTHORIZED_PROJECT ? 'Configured project path does not exist.' : 'No project selected; choose one before file tasks.');
     try {
       if (fs.existsSync(CODEX_JS)) {
-        const v = spawn(process.execPath, [CODEX_JS, '--version'], { windowsHide: true, shell: false });
+        const v = spawn(process.execPath, [CODEX_JS, '--version'], { windowsHide: true, shell: false, env: createChildEnvironment() });
         version = await new Promise((resolve) => { let out = ''; v.stdout.on('data', d => out += d); v.on('close', c => resolve(c === 0 ? safeText(out.trim(), 100) : 'unavailable')); v.on('error', () => resolve('unavailable')); });
-        const a = spawn(process.execPath, [CODEX_JS, 'login', 'status'], { windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+        const a = spawn(process.execPath, [CODEX_JS, 'login', 'status'], { windowsHide: true, shell: false, env: createChildEnvironment(), stdio: ['ignore', 'pipe', 'pipe'] });
         authenticated = await new Promise((resolve) => { let out = ''; a.stdout.on('data', d => out += d); a.stderr.on('data', d => out += d); a.on('close', c => resolve(c === 0 && /logged in/i.test(out))); a.on('error', () => resolve(false)); });
       }
     } catch (e) { authError = safeText(e.message, 500); }
@@ -446,11 +431,11 @@ async function callTool(name, args = {}, dependencies = {}) {
     const phrase = `APROVAR ${id} ${crypto.createHash('sha256').update(prompt).digest('hex').slice(0, 12)}`;
     const configuredPolicy = readPolicy(project);
     const policy = configuredPolicy && configuredPolicy.identity?.realpath?.toLowerCase() === identity.realpath.toLowerCase() && String(configuredPolicy.identity.dev) === String(identity.dev) && String(configuredPolicy.identity.ino) === String(identity.ino) ? configuredPolicy : null;
-    const task = { id, kind: 'write', prompt, summary: prompt, state: 'prepared', expiresAt: Date.now() + APPROVAL_TTL_MS, executor: 'codex', scope: 'pasta selecionada nesta tarefa; sandbox workspace-write do Codex', project_directory: project, project_identity: identity, policy_revision: policy?.revision ?? null, project_identity_policy: policy?.identity ?? null, project_id: policy?.project_id ?? null, decision_basis: policy?.level === 'project_auto' && policy ? 'project_policy' : 'local_task_approval' };
-    tasks.set(id, task); approvals.set(id, { phrase, expiresAt: task.expiresAt, used: false, auto: task.decision_basis === 'project_policy' });
+    const task = { id, kind: 'write', prompt, summary: prompt, state: 'prepared', expiresAt: Date.now() + APPROVAL_TTL_MS, executor: 'codex', scope: 'pasta selecionada nesta tarefa; sandbox workspace-write do Codex', project_directory: project, project_identity: identity, policy_revision: policy?.revision ?? null, project_identity_policy: policy?.identity ?? null, project_id: policy?.project_id ?? null, decision_basis: 'local_task_approval' };
+    tasks.set(id, task); approvals.set(id, { phrase, expiresAt: task.expiresAt, used: false });
     fs.mkdirSync(APPROVAL_DIR, { recursive: true });
     fs.writeFileSync(path.join(APPROVAL_DIR, id + '.pending.json'), JSON.stringify({ task_id: id, project_directory: project, project_identity: identity, summary: safeText(prompt, 1_000), phrase, expiresAt: task.expiresAt, project_id: task.project_id, policy_revision: task.policy_revision, decision_basis: task.decision_basis, executor: task.executor, scope: task.scope }), { mode: 0o600 });
-    return { task_id: id, state: 'prepared', project_directory: project, project_identity: identity, summary: safeText(prompt, 1_000), approval_phrase: phrase, expires_in_seconds: APPROVAL_TTL_MS / 1000, approval: task.decision_basis === 'project_policy' ? 'auto_approved_by_project_policy' : 'awaiting_local_approval', decision_basis: task.decision_basis, policy_revision: task.policy_revision, executed: false };
+    return { task_id: id, state: 'prepared', project_directory: project, project_identity: identity, summary: safeText(prompt, 1_000), approval_phrase: phrase, expires_in_seconds: APPROVAL_TTL_MS / 1000, approval: 'awaiting_local_approval', decision_basis: task.decision_basis, policy_revision: task.policy_revision, executed: false };
   }
   if (name === 'codex_execute_approved') {
     const task = tasks.get(args.task_id); const approval = approvals.get(args.task_id);
@@ -465,22 +450,14 @@ async function callTool(name, args = {}, dependencies = {}) {
     if (task.project_id && (!executionPolicy || executionPolicy.revision !== task.policy_revision || executionPolicy.project_id !== task.project_id
       || executionPolicy.identity.realpath.toLowerCase() !== task.project_identity.realpath.toLowerCase()
       || String(executionPolicy.identity.dev) !== String(task.project_identity.dev) || String(executionPolicy.identity.ino) !== String(task.project_identity.ino)
-      || (task.decision_basis === 'project_policy' && executionPolicy.level !== 'project_auto')
-      || (task.decision_basis === 'local_task_approval' && executionPolicy.level === 'project_auto'))) { approvals.delete(args.task_id); task.state = 'rejected'; throw new Error('Política ou identidade do projeto mudou desde o preparo. Prepare nova tarefa.'); }
-    if (task.decision_basis === 'project_policy') {
-      const current = executionPolicy;
-      if (!current || current.level !== 'project_auto' || current.revision !== task.policy_revision || current.project_id !== task.project_id
-        || current.identity.realpath.toLowerCase() !== task.project_identity.realpath.toLowerCase() || String(current.identity.dev) !== String(task.project_identity.dev) || String(current.identity.ino) !== String(task.project_identity.ino)) {
-        approvals.delete(args.task_id); task.state = 'rejected'; throw new Error('Política automática revogada, desatualizada ou identidade alterada. Prepare nova tarefa.');
-      }
-    }
+      || task.decision_basis !== 'local_task_approval')) { approvals.delete(args.task_id); task.state = 'rejected'; throw new Error('Política ou identidade do projeto mudou desde o preparo. Prepare nova tarefa.'); }
     if (typeof args.approval_phrase !== 'string') throw new Error('Aprovação explícita inválida.');
     const supplied = Buffer.from(args.approval_phrase); const expected = Buffer.from(approval.phrase);
     if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) throw new Error('Aprovação explícita inválida.');
     const proofPath = path.join(APPROVAL_DIR, task.id + '.approved.json');
-    let proof; try { proof = JSON.parse(fs.readFileSync(proofPath, 'utf8')); } catch { if (!approval.auto) throw new Error('Aprovação local explícita ausente; confirme primeiro no PowerShell.'); }
+    let proof; try { proof = JSON.parse(fs.readFileSync(proofPath, 'utf8')); } catch { throw new Error('Aprovação local explícita ausente; confirme primeiro no PowerShell.'); }
     const phraseDigest = crypto.createHash('sha256').update(approval.phrase).digest('hex');
-    if (!approval.auto && (proof.phrase_digest !== phraseDigest || proof.expiresAt < Date.now())) throw new Error('Comprovante local inválido ou vencido.');
+    if (proof.phrase_digest !== phraseDigest || proof.expiresAt < Date.now()) throw new Error('Comprovante local inválido ou vencido.');
     if (active.size) throw new Error('Já existe execução ativa neste projeto.');
     approval.used = true; approvals.delete(args.task_id);
     task.toolReceivedAt = toolReceivedAt;
@@ -501,7 +478,7 @@ async function callTool(name, args = {}, dependencies = {}) {
   }
   if (name === 'codex_cancel_task') {
     const child = active.get(args.task_id); if (!child) throw new Error('Nenhuma execução ativa com esse identificador.');
-    cancelledTasks.add(args.task_id); terminateTree(child); const task = tasks.get(args.task_id); if (task) task.state = 'cancelled';
+    cancelledTasks.add(args.task_id); terminateProcessTree(child); const task = tasks.get(args.task_id); if (task) task.state = 'cancelled';
     return { task_id: args.task_id, state: 'cancelling' };
   }
   throw new Error('Ferramenta desconhecida.');

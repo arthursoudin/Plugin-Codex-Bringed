@@ -4,17 +4,45 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { loadRoutingSettings, saveRoutingSettings, validateRoutingPreferences } from './routing.mjs';
 import { MCP_CLIENTS, prepareMcpSetup } from './mcp-setup.mjs';
 import { projectCatalog, PROJECT_CATALOG_CHECKED_AT } from './project-catalog.mjs';
 import { createTaskRetention, TASK_RETENTION } from './task-retention.mjs';
+import { createChildEnvironment, terminateProcessTree } from './process-safety.mjs';
 
-const execFileAsync = promisify(execFile);
+function execFileAsync(file, args, options = {}) {
+  const timeoutMs = Number(options.timeout) || 0;
+  return new Promise((resolve, reject) => {
+    let child;
+    let timeoutError = null;
+    let timer;
+    const finish = (error, stdout, stderr) => {
+      if (timer) clearTimeout(timer);
+      if (error) {
+        if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') terminateProcessTree(child);
+        error.stdout ??= stdout;
+        error.stderr ??= stderr;
+        reject(timeoutError || error);
+      } else if (timeoutError) {
+        timeoutError.stdout = stdout;
+        timeoutError.stderr = stderr;
+        reject(timeoutError);
+      } else resolve({ stdout, stderr });
+    };
+    try { child = execFile(file, args, { ...options, timeout: 0 }, finish); }
+    catch (error) { reject(error); return; }
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timeoutError = Object.assign(new Error(`Command timed out after ${timeoutMs} ms`), { code: 'ETIMEDOUT', killed: true });
+        terminateProcessTree(child);
+      }, timeoutMs);
+    }
+  });
+}
 async function readRtkReport() {
   const command = process.platform === 'win32' ? 'rtk.exe' : 'rtk';
   const { stdout } = await execFileAsync(command, ['gain', '--all', '--format', 'json'], {
-    encoding: 'utf8', timeout: 8_000, maxBuffer: 1_000_000, windowsHide: true, shell: false,
+    encoding: 'utf8', timeout: 8_000, maxBuffer: 1_000_000, windowsHide: true, shell: false, env: createChildEnvironment(),
   });
   return stdout;
 }
@@ -87,8 +115,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
   }
   async function codexMcpListState(name) {
     if (!bridge.CODEX_JS || !fs.existsSync(bridge.CODEX_JS)) return null;
-    const childEnv = { ...process.env, NO_COLOR: '1', TERM: 'dumb', CI: '1' };
-    for (const key of Object.keys(childEnv)) if (/^(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|CONTROL_PLANE_API_KEY|HERMES_API_KEY)$/i.test(key)) delete childEnv[key];
+    const childEnv = createChildEnvironment({ ci: true });
     try {
       const { stdout } = await execFileAsync(process.execPath, [bridge.CODEX_JS, 'mcp', 'list'], { encoding: 'utf8', timeout: 15_000, maxBuffer: 64_000, windowsHide: true, shell: false, env: childEnv });
       return String(stdout || '').split(/\r?\n/).some(line => line.trim().split(/[\s|]+/).some(cell => cell === name));
@@ -107,8 +134,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
   async function cliMcpListState(cli, name) {
     const executable = resolveCliExecutable(cli);
     if (!executable) return null;
-    const childEnv = { ...process.env, NO_COLOR: '1', TERM: 'dumb', CI: '1' };
-    for (const key of Object.keys(childEnv)) if (/^(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|CONTROL_PLANE_API_KEY|HERMES_API_KEY)$/i.test(key)) delete childEnv[key];
+    const childEnv = createChildEnvironment({ ci: true });
     try {
       const { stdout } = await execFileAsync(executable, ['mcp', 'list'], { encoding: 'utf8', timeout: 15_000, maxBuffer: 64_000, windowsHide: true, shell: false, env: childEnv });
       return String(stdout || '').split(/\r?\n/).some(line => line.trim().split(/[\s|]+/).some(cell => cell === name));
@@ -136,7 +162,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
     try {
       await execFileAsync(executable, ['mcp', 'test', name], {
         encoding: 'utf8', timeout: 60_000, maxBuffer: 64_000, windowsHide: true, shell: false,
-        env: { ...process.env, NO_COLOR: '1', TERM: 'dumb', CI: '1' },
+        env: createChildEnvironment({ ci: true }),
       });
       return 'connected';
     } catch (error) {
@@ -317,8 +343,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
     const listed = await codexMcpListState('headroom');
     if (listed === true) return send(res, 200, tokenSavingsPage('Ja existe um MCP chamado headroom na configura&ccedil;&atilde;o do Codex; nenhuma configura&ccedil;&atilde;o foi sobrescrita.'));
     if (listed === null || codexMcpConfigState('headroom') !== false) return send(res, 409, tokenSavingsPage('Nao consegui confirmar que o nome headroom esta livre na configura&ccedil;&atilde;o local. Confira codex mcp list antes de tentar novamente.'));
-    const childEnv = { ...process.env };
-    for (const key of Object.keys(childEnv)) if (/^(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|CONTROL_PLANE_API_KEY|HERMES_API_KEY)$/i.test(key)) delete childEnv[key];
+    const childEnv = createChildEnvironment();
     try {
       await execFileAsync(process.execPath, [bridge.CODEX_JS, 'mcp', 'add', 'headroom', '--', executable, 'mcp', 'serve'], { encoding: 'utf8', timeout: 30_000, maxBuffer: 16_000, windowsHide: true, shell: false, env: childEnv });
     } catch {
@@ -344,7 +369,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
     const installer = path.join(root, 'scripts', 'Install-Graphify.ps1');
     if (!fs.existsSync(installer)) return send(res, 500, tokenSavingsPage('O instalador Install-Graphify.ps1 n&atilde;o foi encontrado.'));
     try {
-      const { stdout, stderr } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer], { encoding: 'utf8', timeout: 300_000, maxBuffer: 1_000_000, windowsHide: true, shell: false });
+      const { stdout, stderr } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer], { encoding: 'utf8', timeout: 300_000, maxBuffer: 1_000_000, windowsHide: true, shell: false, env: createChildEnvironment() });
       const details = esc((stdout + (stderr ? '\n' + stderr : '')).trim().slice(-8000));
       return send(res, 200, page('Graphify preparado', '<h1>Graphify est\u00e1 pronto no Codex</h1><p>O Graphify CLI e sua integra\u00e7\u00e3o Codex foram preparados. RTK comprime a sa\u00edda do terminal; Headroom otimiza contexto em clientes de API compat\u00edveis; Graphify pesquisa rela\u00e7\u00f5es do c\u00f3digo.</p><details><summary>Detalhes da instala\u00e7\u00e3o</summary><pre>' + details + '</pre></details><p><a href="/dashboard/token-savings">Voltar para Economia de tokens</a></p>', '/dashboard/token-savings'));
     } catch (error) {
@@ -366,7 +391,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
     const installer = path.join(root, 'scripts', 'Install-TokenSavingsTool.ps1');
     if (!fs.existsSync(installer)) return send(res, 500, tokenSavingsPage('O instalador de ferramentas de economia n&atilde;o foi encontrado.'));
     try {
-      const { stdout, stderr } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer, '-Tool', tool], { encoding: 'utf8', timeout: 600_000, maxBuffer: 1_000_000, windowsHide: true, shell: false });
+      const { stdout, stderr } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer, '-Tool', tool], { encoding: 'utf8', timeout: 600_000, maxBuffer: 1_000_000, windowsHide: true, shell: false, env: createChildEnvironment() });
       const details = esc((stdout + (stderr ? '\n' + stderr : '')).trim().slice(-8000));
       const label = tool === 'rtk' ? 'RTK' : 'Headroom';
       const description = tool === 'rtk' ? 'RTK reduz a saida dos comandos do terminal e fornece estimativas de economia.' : 'Headroom otimiza contexto em clientes de API configurados para usar o proxy ou SDK. Esta instalacao n&atilde;o configura a conexao do provedor.';
@@ -588,7 +613,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
   }
   function setApprovalPolicy(id, level) {
     if (projectConfig) throw new Error('Políticas indisponíveis nesta configuração.');
-    if (!['manual', 'assisted', 'project_auto'].includes(level)) throw new Error('Nível de política inválido.');
+    if (!['manual', 'assisted'].includes(level)) throw new Error('Nível de política inválido.');
     const project = byId(id);
     if (!project) throw new Error('Projeto desconhecido.');
     const verified = verifyProject(project.realpath);
@@ -847,7 +872,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
     const installer = path.join(root, 'scripts', 'Install-Tools.ps1');
     if (!fs.existsSync(installer)) return send(res, 500, tunnelsPage(new URLSearchParams(), 'O instalador scripts/Install-Tools.ps1 n\u00e3o foi encontrado.'));
     try {
-      const { stdout, stderr } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer, '-Component', 'All'], { encoding: 'utf8', timeout: 300_000, maxBuffer: 1_000_000, windowsHide: true, shell: false });
+      const { stdout, stderr } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', installer, '-Component', 'All'], { encoding: 'utf8', timeout: 300_000, maxBuffer: 1_000_000, windowsHide: true, shell: false, env: createChildEnvironment() });
       const details = esc((stdout + (stderr ? '\n' + stderr : '')).trim().slice(-8000));
       return send(res, 200, page('Ferramentas instaladas', '<h1>Instala\u00e7\u00e3o conclu\u00edda</h1><p>Node.js e tunnel-client foram preparados para este usu\u00e1rio.</p><details><summary>Ver detalhes</summary><pre>' + details + '</pre></details><p><a href="/dashboard/tunnels">Voltar para Tunnels</a></p>', '/dashboard/tunnels'));
     } catch (error) {
@@ -994,8 +1019,7 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
         if (records.some(record => record.name.toLowerCase() === name.toLowerCase())) throw new Error(`Este painel já registrou ${name}. Confira a lista de MCPs do Codex antes de tentar novamente.`);
         const cliArgs = ['mcp', 'add', name, '--url', parsedUrl.toString()];
         if (authentication === 'bearer_env') cliArgs.push('--bearer-token-env-var', authEnvVar);
-        const childEnv = { ...process.env };
-        for (const key of Object.keys(childEnv)) if (/^(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|CONTROL_PLANE_API_KEY|HERMES_API_KEY)$/i.test(key)) delete childEnv[key];
+        const childEnv = createChildEnvironment();
         try {
           await execFileAsync(process.execPath, [bridge.CODEX_JS, ...cliArgs], { encoding: 'utf8', timeout: 30_000, maxBuffer: 16_000, windowsHide: true, shell: false, env: childEnv });
         } catch (error) {
@@ -1276,10 +1300,12 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
     let events = [];
     try { events = fs.readFileSync(path.join(store, 'project-events.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)).filter(e => e.project_id === id).slice(-30).reverse(); } catch {}
     const history = events.map(e => `<li>${esc(formatTime(e.at))}: ${e.action === 'configured' ? 'Projeto registrado' : 'Identidade da pasta reconfirmada'} · ${esc(e.identity?.realpath || '')}</li>`).join('');
-    const policy = project.approval_policy || { level: 'manual', revision: 0 };
+    const savedPolicy = project.approval_policy || { level: 'manual', revision: 0 };
+    const legacyAutomaticPolicy = savedPolicy.level === 'project_auto';
+    const policy = legacyAutomaticPolicy ? { ...savedPolicy, level: 'manual' } : savedPolicy;
     const policyToken = crypto.randomBytes(32).toString('hex'); sessions.set(`policy-${id}`, policyToken);
-    const names = { manual: 'Manual', assisted: 'Assistida', project_auto: 'Automática no projeto (Codex)', low_risk_auto: 'Automática para baixo risco (indisponível)', all_executors: 'Todos os executores (indisponível)' };
-    const policyBox = `<section class="card"><h2>Política de aprovação</h2><p>Atual: <strong>${esc(names[policy.level] || names.manual)}</strong> · revisão ${Number(policy.revision || 0)}.</p><p>Manual pede aprovação local para cada gravação. Assistida mostra orientação sobre política e risco e também pede aprovação para cada gravação. Automática permite tarefas Codex preparadas neste projeto autorizado: após o usuário aprovar o resumo no chat, o assistente pode executar sem pedir clique na página local. O sandbox e as confirmações nativas do ChatGPT continuam valendo. A política não amplia escopo de pasta, provider ou rede. Hermes e tarefas fora deste projeto continuam pedindo aprovação local.</p><form method="post" action="/dashboard/project/${esc(id)}/policy"><input type="hidden" name="csrf" value="${policyToken}"><label>Nível <select name="level">${['manual','assisted','project_auto'].map(x => `<option value="${x}"${policy.level === x ? ' selected' : ''}>${esc(names[x])}</option>`).join('')}</select></label> <button type="submit">Salvar política</button></form><form method="post" action="/dashboard/project/${esc(id)}/policy/manual"><input type="hidden" name="csrf" value="${policyToken}"><button type="submit">Voltar imediatamente para Manual</button></form></section>`;
+    const names = { manual: 'Manual', assisted: 'Assistida' };
+    const policyBox = `<section class="card"><h2>Política de aprovação</h2><p>Atual: <strong>${esc(names[policy.level] || names.manual)}</strong> · revisão ${Number(policy.revision || 0)}.</p>${legacyAutomaticPolicy ? '<p class="next-step"><strong>Política antiga desativada:</strong> esta versão voltou para Manual e exige aprovação local por tarefa.</p>' : ''}<p>Manual exige aprovação local para cada gravação. Assistida mostra orientação sobre política e risco, mas também exige aprovação local por tarefa. A política não autoriza execução automaticamente.</p><form method="post" action="/dashboard/project/${esc(id)}/policy"><input type="hidden" name="csrf" value="${policyToken}"><label>Nível <select name="level">${['manual','assisted'].map(x => `<option value="${x}"${policy.level === x ? ' selected' : ''}>${esc(names[x])}</option>`).join('')}</select></label> <button type="submit">Salvar política</button></form><form method="post" action="/dashboard/project/${esc(id)}/policy/manual"><input type="hidden" name="csrf" value="${policyToken}"><button type="submit">Voltar imediatamente para Manual</button></form></section>`;
     return page(project.name, `<h1>${esc(project.name)}</h1><p>Pasta: <code>${esc(project.realpath)}</code> · Identidade: <strong>${verified.ok ? 'confirmada' : esc(verified.reason)}</strong></p><p>Configurado em ${esc(formatTime(project.configured_at))}. <a href="/dashboard/project/${esc(id)}/readme">Abrir README</a></p>${policyBox}<h2>Histórico da identidade</h2><ul>${history || '<li>Nenhuma verificação anterior.</li>'}</ul>${content}`);
   }
   async function updatePolicy(req, res, id, forcedLevel) {
@@ -1288,7 +1314,6 @@ export function createDashboard(bridge, { baseUrl, root = path.dirname(fileURLTo
     const token = sessions.get(`policy-${id}`), cookie = String(req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith('codex_dashboard='))?.slice('codex_dashboard='.length);
     if (!token || new URLSearchParams(body).get('csrf') !== token || cookie !== token) return send(res, 403, page('Bloqueado', '<p>Confirmação local inválida.</p>'));
     const level = forcedLevel || new URLSearchParams(body).get('level');
-    if (level === 'project_auto' && new URLSearchParams(body).get('confirm') !== 'yes') return send(res, 200, page('Confirme política automática', `<h1>Ativar aprovação automática do projeto?</h1><p>Codex poderá aprovar automaticamente tarefas preparadas para ${esc(byId(id)?.name)} (pasta ${esc(byId(id)?.realpath)}), revisão seguinte. O sandbox e as confirmações nativas do ChatGPT continuam valendo. O usuário aprova cada resumo no chat; o painel local não pede clique por tarefa. Este escopo vale somente para Codex neste projeto.</p><form method="post" action="/dashboard/project/${esc(id)}/policy"><input type="hidden" name="csrf" value="${token}"><input type="hidden" name="level" value="project_auto"><input type="hidden" name="confirm" value="yes"><button type="submit">Confirmar exatamente este escopo</button></form></p>`), `codex_dashboard=${token}; HttpOnly; SameSite=Strict; Path=/dashboard; Max-Age=300`);
     try { setApprovalPolicy(id, level); return send(res, 200, page('Política atualizada', `<p>Política salva. Revisão incrementada; tarefas pendentes anteriores perdem qualquer elegibilidade automática.</p><p><a href="/dashboard/project/${esc(id)}">Voltar ao projeto</a></p>`)); }
     catch (error) { return send(res, 400, page('Política não alterada', `<p>${esc(error.message)}</p>`)); }
   }

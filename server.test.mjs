@@ -71,8 +71,8 @@ test('MCP handshake, discovery, and safe status call', async () => {
       'public_page_open', 'public_page_read',
       'codex_status', 'codex_run_readonly', 'codex_prepare_task', 'codex_execute_approved',
       'codex_task_result', 'codex_cancel_task', 'codex_model_session', 'codex_model_evaluate', 'codex_route_prepare_task', 'codex_route_execute_approved',
-      'hermes_status', 'hermes_ask', 'hermes_environment_check', 'hermes_prepare_task',
-      'hermes_approval_status', 'hermes_execute_approved', 'hermes_task_progress', 'hermes_task_logs',
+      'hermes_status', 'hermes_environment_check',
+      'hermes_approval_status', 'hermes_task_progress', 'hermes_task_logs',
       'hermes_validation_result', 'hermes_execution_health', 'hermes_list_tasks', 'codex_configure_project',
       'codex_plugin_setup', 'codex_mcp_configurator', 'codex_tunnel_setup_prompt', 'codex_plugin_instructions',
       'codex_plugin_capabilities', 'codex_bridge_guide', 'codex_project_readme', 'codex_project_summary', 'codexbridge_project_advisor', 'codex_project_note',
@@ -89,7 +89,7 @@ test('MCP handshake, discovery, and safe status call', async () => {
     }
     const hints = Object.fromEntries(listed.result.tools.map(tool => [tool.name, tool.annotations]));
     assert.deepEqual(hints.codex_run_readonly, { readOnlyHint: true, openWorldHint: false, destructiveHint: false });
-    assert.deepEqual(hints.hermes_ask, { readOnlyHint: false, openWorldHint: true, destructiveHint: true });
+    assert.equal(listed.result.tools.some(tool => tool.name === 'hermes_ask'), false);
     assert.deepEqual(hints.codex_build_project, { readOnlyHint: false, openWorldHint: true, destructiveHint: true });
     assert.ok(listed.result.tools.some(t => t.name === 'codex_mcp_configurator'));
     assert.ok(listed.result.tools.some(t => t.name === 'codex_tunnel_setup_prompt'));
@@ -98,8 +98,8 @@ test('MCP handshake, discovery, and safe status call', async () => {
     assert.ok(listed.result.tools.some(t => t.name === 'codex_configure_project'));
     assert.ok(listed.result.tools.some(t => t.name === 'codex_project_readme'));
     assert.ok(listed.result.tools.some(t => t.name === 'codex_project_summary'));
-    assert.ok(listed.result.tools.some(t => t.name === 'hermes_prepare_task'));
-    assert.ok(listed.result.tools.some(t => t.name === 'hermes_execute_approved'));
+    assert.equal(listed.result.tools.some(t => t.name === 'hermes_prepare_task'), false);
+    assert.equal(listed.result.tools.some(t => t.name === 'hermes_execute_approved'), false);
     assert.ok(listed.result.tools.some(t => t.name === 'codex_plugin_setup'));
     assert.ok(listed.result.tools.some(t => t.name === 'codex_plugin_instructions'));
     assert.ok(listed.result.tools.some(t => t.name === 'codex_plugin_capabilities'));

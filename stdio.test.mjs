@@ -41,7 +41,7 @@ test('stdio exposes the complete workflow tool inventory', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-stdio-'));
   try {
     const workflow = createWorkflow(bridge, {
-      baseUrl: 'http://127.0.0.1:18482', dashboardRoot: root, settingsFile: path.join(root, 'settings.json'),
+      baseUrl: 'http://127.0.0.1:18482', dashboardRoot: root, enableHermesExecution: true, settingsFile: path.join(root, 'settings.json'),
     });
     const input = new PassThrough();
     const output = new PassThrough();

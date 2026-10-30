@@ -14,7 +14,7 @@ test('hermes_ask shows the exact request and waits for one-time local approval b
   const prompt = 'Summarize the local project and do not change files.';
   let hermesCalls = 0, checks = 0;
   const workflow = createWorkflow(bridge, {
-    baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir,
+    baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir, enableHermesExecution: true,
     projectConfig: [{ id: 'test', name: 'Test', root: dir, ...identity }],
     hermesRunner: async (args, _timeout, cwd) => { hermesCalls++; assert.deepEqual(args, ['--safe-mode', '--ignore-user-config', '--ignore-rules', '-z', prompt]); assert.equal(fs.realpathSync.native(cwd), realpath); return { state: 'completed', output: 'Summary ready' }; },
     checkRunner: async () => { checks++; return { state: 'passed' }; },
@@ -33,7 +33,7 @@ test('hermes_ask shows the exact request and waits for one-time local approval b
     const get = response();
     await workflow.serveApproval({ url: `/approve/${prepared.task_id}`, method: 'GET' }, get);
     assert.ok(get.data.includes(prompt));
-    assert.match(get.data, /pode usar ferramentas disponiveis/);
+    assert.match(get.data, /pode usar ferramentas/);
     assert.match(get.data, /Aprovar este pedido ao Hermes/);
     const token = /name="csrf" value="([0-9a-f]+)"/.exec(get.data)[1];
     const approved = response();

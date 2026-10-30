@@ -30,7 +30,7 @@ test('hermes_prepare_task accepts explicit unregistered directory and retains id
   const folder = path.join(root, 'task-folder'); fs.mkdirSync(folder);
   try {
     const bridge = { LOCK_PATH: path.join(root, 'active.lock'), tasks: new Map(), approvals: new Map(), safeText: String, MAX_RESPONSE: 8000 };
-    const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: root, hermesRunner: async () => ({ state: 'completed', output: '' }) });
+    const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: root, enableHermesExecution: true, hermesRunner: async () => ({ state: 'completed', output: '' }) });
     const result = await invoke(workflow, 'hermes_prepare_task', { task: 'Inspect this folder', project_directory: folder });
     assert.equal(result.result.isError, false);
     const task = result.result.structuredContent;

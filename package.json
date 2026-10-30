@@ -15,8 +15,8 @@
     "build": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/Package-Plugin.ps1",
     "package:check": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/Package-Plugin.ps1 -ValidateOnly",
     "migration:compare": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/Compare-Installations.ps1",
-    "typecheck": "node --check server.mjs && node --check stdio.mjs && node --check dashboard.mjs && node --check dashboard-workshop.js && node --check workflow.mjs && node --check project-catalog.mjs && node --check task-retention.mjs && node --check routing.mjs && node --check runtime-info.mjs && node --check mcp-setup.mjs && node --check tool-annotations.mjs && node --check bridge/server.mjs && node --check bridge/approve-task.mjs",
-    "test": "node --test --test-concurrency=1 server.test.mjs stdio.test.mjs dashboard.test.mjs dashboard-workshop.test.mjs workflow.test.mjs routing.test.mjs project-catalog.test.mjs task-retention.test.mjs workflow-utf8.test.mjs bridge/server.test.mjs preflight.test.mjs"
+    "typecheck": "node --check process-safety.mjs && node --check server.mjs && node --check stdio.mjs && node --check dashboard.mjs && node --check dashboard-workshop.js && node --check workflow.mjs && node --check project-catalog.mjs && node --check task-retention.mjs && node --check routing.mjs && node --check runtime-info.mjs && node --check mcp-setup.mjs && node --check tool-annotations.mjs && node --check bridge/server.mjs && node --check bridge/approve-task.mjs",
+    "test": "node --test --test-concurrency=1 process-safety.test.mjs hermes-ask.test.mjs server.test.mjs stdio.test.mjs dashboard.test.mjs dashboard-workshop.test.mjs workflow.test.mjs routing.test.mjs project-catalog.test.mjs task-retention.test.mjs workflow-utf8.test.mjs bridge/server.test.mjs preflight.test.mjs"
   },
   "engines": { "node": ">=22" },
   "dependencies": { "playwright": "^1.56.1" }

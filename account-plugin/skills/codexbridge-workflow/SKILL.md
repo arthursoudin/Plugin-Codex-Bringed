@@ -28,7 +28,7 @@ Use as ferramentas MCP disponíveis na conexão atual. O ChatGPT resume o pedido
 
 1. Prepare a tarefa. Confira executor, pasta, modelo/esforço, escopo e validações; apresente um resumo curto em português e ofereça a instrução completa quando necessário.
 2. Aguarde a aprovação explícita do usuário no chat antes da execução e respeite qualquer confirmação nativa do ChatGPT. O servidor não recebe prova verificável desse sim.
-3. Em Manual ou Assistida, aguarde também a aprovação local de uso único. Em `project_auto`, dispense essa página somente quando uma tarefa Codex preparada retornar `auto_approved_by_project_policy`. Hermes continua exigindo aprovação local.
+3. Toda tarefa Codex que altera arquivos exige aprovação local de uso único, independentemente da política antiga salva no projeto. Configurações legadas `project_auto` são tratadas como Manual. Hermes fica desativado por padrão; quando explicitamente habilitado, cada execução também exige aprovação local e pode usar as ferramentas configuradas no Hermes, fora da pasta selecionada.
 4. Execute uma vez com a frase da tarefa preparada. A política automática atual pertence ao projeto; não a apresente como escolha temporária por tarefa.
 5. Consulte progresso, logs e validação. Em timeout, cancelamento ou falha, considere possível alteração parcial e inspecione os arquivos antes de preparar outra tarefa.
 

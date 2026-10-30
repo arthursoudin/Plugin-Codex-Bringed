@@ -123,7 +123,7 @@ test('adds a remote Codex MCP only after trust consent and rejects duplicate nam
     "  fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });",
     "  const url = args[args.indexOf('--url') + 1];",
     "  fs.appendFileSync(config, '[mcp_servers.' + args[2] + ']\\nurl = \"' + url + '\"\\n');",
-    "  fs.writeFileSync(process.env.CODEX_TEST_ARGS_FILE, JSON.stringify(args));",
+    "  fs.writeFileSync(" + JSON.stringify(argsFile) + ", JSON.stringify(args));",
     "  process.stdout.write('Added');",
     "} else if (args[0] === 'mcp' && args[1] === 'list') {",
     "  const content = fs.existsSync(config) ? fs.readFileSync(config, 'utf8') : '';",
@@ -337,8 +337,9 @@ test('política começa em manual, persiste por identidade e incrementa revisão
     const dashboard = createDashboard(bridge, { root: dir, baseUrl: 'http://127.0.0.1:18473' });
     const registered = dashboard.configureProject('Projeto', dir).project;
     assert.equal(registered.approval_policy, undefined);
-    const enabled = dashboard.setApprovalPolicy(registered.id, 'project_auto');
-    assert.equal(enabled.level, 'project_auto');
+    assert.throws(() => dashboard.setApprovalPolicy(registered.id, 'project_auto'), /N.vel de pol.tica inv.lido/);
+    const enabled = dashboard.setApprovalPolicy(registered.id, 'assisted');
+    assert.equal(enabled.level, 'assisted');
     assert.equal(enabled.revision, 1);
     const revoked = dashboard.setApprovalPolicy(registered.id, 'manual');
     assert.equal(revoked.level, 'manual');

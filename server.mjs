@@ -93,6 +93,7 @@ export async function startHttpAdapter({ port = Number(process.env.CODEXBRIDGE_H
       baseUrl: `http://${host}:${candidate}`,
       settingsFile: testDashboardRoot ? path.join(testDashboardRoot, 'config', 'settings.json') : settingsFile,
       dashboardRoot: testDashboardRoot,
+      enableHermesExecution: process.env.CODEXBRIDGE_ENABLE_HERMES_EXECUTION === '1',
     });
     const server = createHttpServer(workflow, candidate);
     try {

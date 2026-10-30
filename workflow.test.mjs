@@ -185,6 +185,20 @@ test('configurador de MCP prepara passos sem guardar nem aceitar segredos', asyn
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('Hermes execution is disabled and hidden by default', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hermes-disabled-'));
+  try {
+    const bridge = { LOCK_PATH: path.join(dir, 'active.lock'), tasks: new Map(), approvals: new Map(), active: new Map(), MAX_RESPONSE: 8000, safeText: String };
+    let runs = 0;
+    const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir, hermesRunner: async () => { runs++; return { state: 'completed' }; } });
+    const listed = await workflow.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, () => ({ result: { tools: [] } }));
+    assert.equal(listed.result.tools.some(tool => ['hermes_ask', 'hermes_prepare_task', 'hermes_execute_approved'].includes(tool.name)), false);
+    const reply = await workflow.handle({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'hermes_ask', arguments: { prompt: 'hello', project_directory: dir } } }, () => ({ result: {} }));
+    assert.equal(reply.result.isError, true);
+    assert.equal(runs, 0);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('prompt de setup do tunnel exige segredo oculto e não usa credenciais pessoais', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-tunnel-prompt-'));
   try {
@@ -207,7 +221,7 @@ test('Hermes executa somente após aprovação local, consome a frase e salva va
   const projectIdentity = { realpath: fs.realpathSync.native(dir), dev: stat.dev, ino: stat.ino };
   const bridge = { LOCK_PATH: path.join(dir, 'active.lock'), AUTHORIZED_PROJECT: dir, tasks: new Map(), approvals: new Map(), active: new Map(), MAX_RESPONSE: 8000, safeText: x => String(x), projectPolicySnapshot: () => ({ project_id: 'test', level: 'manual', revision: 0, identity: projectIdentity }) };
   let hermesCalls = 0; const checks = [];
-  const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir,
+  const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir, enableHermesExecution: true,
     projectConfig: [{ id: 'test', name: 'Test', root: dir, realpath: fs.realpathSync.native(dir), dev: stat.dev, ino: stat.ino }],
     hermesRunner: async (args, _timeout, cwd) => { hermesCalls++; assert.deepEqual(args[0], '-z'); assert.equal(fs.realpathSync.native(cwd), fs.realpathSync.native(dir)); return { state: 'completed', output: 'Edited files' }; },
     checkRunner: async (_root, script) => { checks.push(script); return { script, state: 'passed', exit_code: 0 }; } });
@@ -355,8 +369,8 @@ test('a execução exige aprovação local e a página registra a aprovação da
   const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir, projectConfig: [{ id: 'jarvis', name: 'Jarvis', root: dir, realpath: fs.realpathSync.native(dir), dev: stat.dev, ino: stat.ino }] });
   const originalTools = [{ name: 'codex_status' }];
   const list = () => workflow.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, () => ({ result: { tools: originalTools } }));
-  assert.equal((await list()).result.tools.length, 38);
-  assert.equal((await list()).result.tools.length, 38);
+  assert.equal((await list()).result.tools.length, 35);
+  assert.equal((await list()).result.tools.length, 35);
   assert.equal(originalTools.length, 1);
   const rpc = (name, args) => workflow.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, () => { throw new Error('Unexpected original call'); });
   const args = { task_id: id, approval_phrase: 'APROVAR teste' };
@@ -416,7 +430,7 @@ test('roteamento aplicado fica no snapshot, aparece na aprovação e governa os 
   fs.writeFileSync(settingsFile, JSON.stringify({ routing_revision: 4, routing: { active: true, enabled: ['hermes', 'codex'], primary: 'hermes', complex: 'codex', fallback: [], executors: { hermes: { provider: 'openrouter', model: 'provider/model', effort: 'high' }, codex: { model: 'gpt-6.1-sol', effort: 'xhigh' } } } }));
   const bridge = { LOCK_PATH: path.join(dir, 'active.lock'), AUTHORIZED_PROJECT: dir, tasks: new Map(), approvals: new Map(), active: new Map(), MAX_RESPONSE: 8000, safeText: x => String(x), projectPolicySnapshot: () => ({ project_id: 'routed', revision: 0 }) };
   let actualArgs;
-  const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir, settingsFile,
+  const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir, enableHermesExecution: true, settingsFile,
     projectConfig: [{ id: 'routed', name: 'Projeto', root: dir, realpath: fs.realpathSync.native(dir), dev: stat.dev, ino: stat.ino }],
     hermesRunner: async args => { actualArgs = args; return { state: 'completed', output: 'ok' }; },
     checkRunner: async (_root, script) => ({ script, state: 'passed' }) });
@@ -506,7 +520,7 @@ test('fluxos sem projeto padrão aceitam pasta explícita e diagnósticos globai
   fs.writeFileSync(path.join(project, 'package.json'), JSON.stringify({ scripts: { typecheck: 'echo ok', build: 'echo ok' } }));
   const bridge = { LOCK_PATH: path.join(dir, 'active.lock'), tasks: new Map(), approvals: new Map(), active: new Map(), CODEX_JS: null, MAX_RESPONSE: 8000, safeText: x => String(x) };
   const hermesCalls = [];
-  const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir,
+  const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir, enableHermesExecution: true,
     hermesRunner: async (args, _timeout, cwd) => { hermesCalls.push({ args, cwd }); return { state: 'completed', output: 'Hermes 1' }; } });
   const rpc = (name, args = {}) => workflow.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, () => { throw new Error('Unexpected original call'); });
   try {
