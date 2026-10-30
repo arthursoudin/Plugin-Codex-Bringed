@@ -1,6 +1,6 @@
 import http from 'node:http';
 import path from 'node:path';
-import { defaultMcpTokenFile, loadOrCreateMcpToken, matchesMcpToken } from './http-auth.mjs';
+import { defaultMcpTokenFile, loadOrCreateMcpToken, matchesDashboardAuthorization, matchesMcpToken } from './http-auth.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createWorkflow } from './workflow.mjs';
 
@@ -30,6 +30,13 @@ function createHttpServer(workflow, port, mcpToken) { return http.createServer(a
     try { origin = new URL(req.headers.origin); } catch {}
     if (!origin || origin.origin !== `http://${req.headers.host}` || origin.pathname !== '/' || origin.search || origin.hash) {
       res.writeHead(403).end();
+      return;
+    }
+  }
+  if (req.url?.startsWith('/dashboard') || req.url?.startsWith('/approve/') || req.url?.startsWith('/validate/')) {
+    if (!matchesDashboardAuthorization(req.headers.authorization, mcpToken)) {
+      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="CodexBridge local interface", charset="UTF-8"', 'Cache-Control': 'no-store', 'Content-Type': 'text/plain; charset=utf-8' })
+        .end('Informe o usuário codexbridge e o token MCP local para abrir esta página.');
       return;
     }
   }

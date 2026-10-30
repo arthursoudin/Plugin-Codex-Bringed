@@ -37,3 +37,13 @@ export function matchesMcpToken(candidate, expected) {
   const secret = Buffer.from(expected);
   return supplied.length === secret.length && crypto.timingSafeEqual(supplied, secret);
 }
+
+export function matchesDashboardAuthorization(header, expected) {
+  if (typeof header !== 'string' || header.length > 256) return false;
+  const match = /^Basic ([A-Za-z0-9+/]+={0,2})$/i.exec(header);
+  if (!match) return false;
+  const decoded = Buffer.from(match[1], 'base64').toString('utf8');
+  const separator = decoded.indexOf(':');
+  return separator > 0 && decoded.slice(0, separator) === 'codexbridge'
+    && matchesMcpToken(decoded.slice(separator + 1), expected);
+}

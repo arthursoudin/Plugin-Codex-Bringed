@@ -65,17 +65,27 @@ test('HTTP MCP exige token válido para POST e DELETE', async () => {
   const validDelete = await fetch(base, { method: 'DELETE', headers: { 'x-codexbridge-token': fs.readFileSync(tokenFile, 'utf8').trim() } });
   assert.equal(validDelete.status, 204);
   const token = fs.readFileSync(tokenFile, 'utf8').trim();
+  const authorization = `Basic ${Buffer.from(`codexbridge:${token}`).toString('base64')}`;
+  const noAuthDashboard = await fetch(`http://127.0.0.1:${port}/dashboard`);
+  assert.equal(noAuthDashboard.status, 401);
+  assert.match(noAuthDashboard.headers.get('www-authenticate') || '', /Basic realm="CodexBridge local interface"/);
+  const wrongPassword = `Basic ${Buffer.from('codexbridge:invalid-token').toString('base64')}`;
+  assert.equal((await fetch(`http://127.0.0.1:${port}/dashboard`, { headers: { authorization: wrongPassword } })).status, 401);
+  for (const route of ['/approve/00000000-0000-4000-8000-000000000001', '/validate/00000000-0000-4000-8000-000000000001']) {
+    assert.equal((await fetch(`http://127.0.0.1:${port}${route}`)).status, 401, route);
+  }
   const crossPortOrigin = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json', 'x-codexbridge-token': token, origin: `http://127.0.0.1:${port + 1}` }, body });
   assert.equal(crossPortOrigin.status, 403);
   const crossSiteDashboard = await fetch(`http://127.0.0.1:${port}/dashboard`, { headers: { origin: 'https://example.invalid' } });
   assert.equal(crossSiteDashboard.status, 403);
-  const sameOriginDashboard = await fetch(`http://127.0.0.1:${port}/dashboard`, { headers: { origin: `http://127.0.0.1:${port}` } });
+  const sameOriginDashboard = await fetch(`http://127.0.0.1:${port}/dashboard`, { headers: { origin: `http://127.0.0.1:${port}`, authorization } });
   assert.equal(sameOriginDashboard.status, 200);
 });
 
 test('MCP handshake, discovery, and safe status call', async () => {
   try {
     await ready();
+    const authorization = `Basic ${Buffer.from(`codexbridge:${fs.readFileSync(tokenFile, 'utf8').trim()}`).toString('base64')}`;
     const rpc = async (id, method, params) => {
       const response = await fetch(base, {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-codexbridge-token': fs.readFileSync(tokenFile, 'utf8').trim(), accept: 'application/json, text/event-stream' },
@@ -86,7 +96,7 @@ test('MCP handshake, discovery, and safe status call', async () => {
     };
     const init = await rpc(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
     assert.equal(init.result.serverInfo.name, 'codexbridge');
-    assert.equal(init.result.serverInfo.version, '0.2.5');
+    assert.equal(init.result.serverInfo.version, '0.2.6');
     const listed = await rpc(2, 'tools/list', {});
     const expectedTools = [
       'public_page_open', 'public_page_read',
@@ -130,7 +140,7 @@ test('MCP handshake, discovery, and safe status call', async () => {
     assert.equal(status.result.structuredContent.project_directory, projectFixture);
     assert.equal(status.result.structuredContent.version, 'fixture codex');
     for (const route of ['/dashboard', '/dashboard/codex-workshop', '/dashboard/catalog', '/dashboard/coming-soon', '/dashboard/retention', '/dashboard/requests', '/dashboard/tunnels']) {
-      assert.equal((await fetch(`http://127.0.0.1:${port}${route}`)).status, 200, route);
+      assert.equal((await fetch(`http://127.0.0.1:${port}${route}`, { headers: { authorization } })).status, 200, route);
     }
     for (const directory of [
       path.join(projectFixture, 'history'),
