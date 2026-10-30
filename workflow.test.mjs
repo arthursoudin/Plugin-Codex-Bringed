@@ -7,6 +7,23 @@ import crypto from 'node:crypto';
 import { Readable } from 'node:stream';
 import { createWorkflow } from './workflow.mjs';
 
+test('workflow sanitizes structured tool responses before returning them', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-structured-output-'));
+  try {
+    let sanitized = false;
+    const bridge = {
+      LOCK_PATH: path.join(dir, 'active.lock'), tasks: new Map(), approvals: new Map(), MAX_RESPONSE: 8000,
+      safeText: value => String(value),
+      sanitizeStructured: value => { sanitized = true; return { marker: value.count >= 0 ? '[SANITIZED]' : '[INVALID]' }; },
+    };
+    const workflow = createWorkflow(bridge, { baseUrl: 'http://127.0.0.1:18473', dashboardRoot: dir });
+    const reply = await workflow.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'codexbridge_project_advisor', arguments: { goal: 'not in the catalog' } } }, () => { throw new Error('Unexpected core call'); });
+    assert.equal(sanitized, true);
+    assert.deepEqual(reply.result.structuredContent, { marker: '[SANITIZED]' });
+    assert.equal(reply.result.content[0].text, '{"marker":"[SANITIZED]"}');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('política global escala por tarefa e termina ao reiniciar o workflow', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-model-session-'));
   try {

@@ -96,9 +96,50 @@ function safeText(value, limit = MAX_RESPONSE) {
   return String(value ?? '')
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/(bearer\s+)[A-Za-z0-9._~+/-]+=*/ig, '$1[REDACTED]')
-    .replace(/\b(sk-[A-Za-z0-9_-]{8,}|sess-[A-Za-z0-9_-]{8,})\b/g, '[REDACTED]')
-    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*[:=]\s*)[^\s,;"']+/ig, '$1[REDACTED]')
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, '[REDACTED PRIVATE KEY]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|sess-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g, '[REDACTED]')
+    .replace(/\b(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})\b/g, '[REDACTED]')
+    .replace(/((?:["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret|token|private[_-]?key|authorization)["']?\s*[:=]\s*))(?:"([^"]*)"|'([^']*)'|([^\s,;}\]]+))/ig,
+      (_match, prefix, doubleQuoted, singleQuoted, bare) => {
+        const quote = doubleQuoted !== undefined ? '"' : singleQuoted !== undefined ? "'" : '';
+        return `${prefix}${quote}[REDACTED]${quote}`;
+      })
     .slice(0, limit);
+}
+
+function sanitizeStructured(value, state = { remaining: MAX_RESPONSE, nodes: 500 }, depth = 0) {
+  state.nodes -= 1;
+  if (state.nodes < 0) return '[TRUNCATED]';
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const safe = safeText(value, Math.max(0, state.remaining));
+    state.remaining -= safe.length;
+    return safe;
+  }
+  if (depth >= 8 || state.remaining <= 0) return '[TRUNCATED]';
+  if (Array.isArray(value)) {
+    const result = [];
+    for (const item of value.slice(0, 100)) {
+      if (state.remaining <= 0) { result.push('[TRUNCATED]'); break; }
+      result.push(sanitizeStructured(item, state, depth + 1));
+    }
+    if (value.length > 100 && result.length < 101) result.push('[TRUNCATED]');
+    return result;
+  }
+  if (typeof value === 'object') {
+    const result = {};
+    for (const [key, item] of Object.entries(value).slice(0, 100)) {
+      if (state.remaining <= 0) { result.__truncated__ = true; break; }
+      const safeKey = safeText(key, Math.min(256, state.remaining));
+      state.remaining -= safeKey.length;
+      result[safeKey] = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret|token|private[_-]?key|authorization)/i.test(key)
+        ? '[REDACTED]'
+        : sanitizeStructured(item, state, depth + 1);
+    }
+    if (Object.keys(value).length > 100) result.__truncated__ = true;
+    return result;
+  }
+  return safeText(String(value), Math.max(0, state.remaining));
 }
 
 function validatePrompt(prompt) {
@@ -494,7 +535,8 @@ async function handle(message) {
     const { name, arguments: args } = message.params ?? {};
     try {
       const data = await callTool(name, args ?? {}, { toolReceivedAt: performance.now() });
-      return { jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: safeText(JSON.stringify(data), MAX_RESPONSE) }], structuredContent: data, isError: false } };
+      const safeData = sanitizeStructured(data);
+      return { jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: safeText(JSON.stringify(safeData), MAX_RESPONSE) }], structuredContent: safeData, isError: false } };
     } catch (e) {
       const error = safeText(e.message, 1_000);
       return { jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: error }], isError: true } };
@@ -520,7 +562,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   });
 }
 
-export { APPROVAL_TTL_MS, AUTHORIZED_PROJECT, CODEX_JS, MAX_PROMPT, MAX_RESPONSE, MAX_PENDING_TASKS, MAX_RETAINED_TERMINAL_TASKS, LOCK_PATH, active, approvals, assertTaskCapacity, canonicalProject, callTool, configuredProfile, extractFinal, extractProfile, handle, hasDestructiveIntent, projectPolicySnapshot, pruneTaskState, runCodex, safeText, tasks, tools, validatePrompt };
+export { APPROVAL_TTL_MS, AUTHORIZED_PROJECT, CODEX_JS, MAX_PROMPT, MAX_RESPONSE, MAX_PENDING_TASKS, MAX_RETAINED_TERMINAL_TASKS, LOCK_PATH, active, approvals, assertTaskCapacity, canonicalProject, callTool, configuredProfile, extractFinal, extractProfile, handle, hasDestructiveIntent, projectPolicySnapshot, pruneTaskState, runCodex, safeText, sanitizeStructured, tasks, tools, validatePrompt };
 
 
 

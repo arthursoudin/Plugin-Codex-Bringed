@@ -78,6 +78,13 @@ export function createWorkflow(bridge, { baseUrl, dashboardRoot, settingsFile, p
   let hermesVersionPending = null;
   const approvalDir = path.join(path.dirname(bridge.LOCK_PATH), 'approvals');
   const dashboard = createDashboard(bridge, { baseUrl, root: dashboardRoot, settingsFile, projectConfig });
+  function safeStructuredResult(data) {
+    const structuredContent = typeof bridge.sanitizeStructured === 'function' ? bridge.sanitizeStructured(data) : data;
+    return {
+      structuredContent,
+      content: [{ type: 'text', text: bridge.safeText(JSON.stringify(structuredContent), bridge.MAX_RESPONSE) }],
+    };
+  }
   function pruneWorkflowState(now = Date.now()) {
     bridge.pruneTaskState?.(now);
     for (const [id, request] of validationRequests) {
@@ -839,7 +846,7 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
           message: matches.length ? 'Resultados do catálogo local; são recomendações opcionais, não integrações instaladas.' : (hasId ? 'ID não encontrado no catálogo local.' : 'Nenhuma recomendação do catálogo correspondeu à necessidade informada.'),
           projects: matches.map(({ id, name, summary, category, compatibility, permissions, risks, care, url, lastPush, license, confidence }) => ({ id, name, summary, category, compatibility, permissions, verified_risks: [], operational_risks_and_limits: risks, risk_basis: 'Risco operacional descrito ou inferido da finalidade documentada; o código do projeto não foi auditado nem executado.', care, official_url: url, verification_date: PROJECT_CATALOG_CHECKED_AT, last_official_repo_push: lastPush, license, confidence }))
         };
-        return { jsonrpc: '2.0', id: message.id, result: { isError: false, structuredContent: data, content: [{ type: 'text', text: JSON.stringify(data) }] } };
+        return { jsonrpc: '2.0', id: message.id, result: { isError: false, ...safeStructuredResult(data) } };
       }
       if (name === 'codex_route_prepare_task') {
         try {
@@ -880,7 +887,7 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
             dashboard.save(reply.task_id, { ...stored, routing_snapshot: snapshot });
             reply.routing_snapshot = snapshot;
           }
-          return { jsonrpc: '2.0', id: message.id, result: { isError: false, structuredContent: reply.result?.structuredContent || reply, content: [{ type: 'text', text: JSON.stringify(reply.result?.structuredContent || reply) }] } };
+          return { jsonrpc: '2.0', id: message.id, result: { isError: false, ...safeStructuredResult(reply.result?.structuredContent || reply) } };
         } catch (error) { return { jsonrpc: '2.0', id: message.id, result: { isError: true, content: [{ type: 'text', text: bridge.safeText(error.message, 1000) }] } }; }
       }
       if (name === 'codex_execute_approved') {
@@ -893,7 +900,7 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
       if (additions.some(tool => tool.name === name)) {
         try {
           const data = await call(name, message.params?.arguments || {});
-          return { jsonrpc: '2.0', id: message.id, result: { isError: false, structuredContent: data, content: [{ type: 'text', text: bridge.safeText(JSON.stringify(data), bridge.MAX_RESPONSE) }] } };
+          return { jsonrpc: '2.0', id: message.id, result: { isError: false, ...safeStructuredResult(data) } };
         } catch (error) { return { jsonrpc: '2.0', id: message.id, result: { isError: true, content: [{ type: 'text', text: bridge.safeText(error.message, 1000) }] } }; }
       }
       if (name === 'codex_run_readonly') {
@@ -901,7 +908,7 @@ Se a entrada segura não puder ser feita no terminal interativo, não peça a ch
           const evaluation = codexEvaluation(message.params?.arguments?.instruction);
           if (evaluation) {
             const data = await bridge.callTool(name, message.params?.arguments || {}, { routingSnapshot: evaluation });
-            return { jsonrpc: '2.0', id: message.id, result: { isError: false, structuredContent: data, content: [{ type: 'text', text: bridge.safeText(JSON.stringify(data), bridge.MAX_RESPONSE) }] } };
+            return { jsonrpc: '2.0', id: message.id, result: { isError: false, ...safeStructuredResult(data) } };
           }
         } catch (error) { return { jsonrpc: '2.0', id: message.id, result: { isError: true, content: [{ type: 'text', text: bridge.safeText(error.message, 1000) }] } }; }
       }

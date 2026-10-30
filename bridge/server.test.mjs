@@ -24,7 +24,7 @@ after(() => {
     }
   }
 });
-const { active, approvals, assertTaskCapacity, AUTHORIZED_PROJECT, callTool, canonicalProject, configuredProfile, extractProfile, handle, LOCK_PATH, MAX_PENDING_TASKS, MAX_RETAINED_TERMINAL_TASKS, pruneTaskState, runCodex, safeText, tasks, tools, validatePrompt } = await import('./server.mjs');
+const { active, approvals, assertTaskCapacity, AUTHORIZED_PROJECT, callTool, canonicalProject, configuredProfile, extractProfile, handle, LOCK_PATH, MAX_PENDING_TASKS, MAX_RETAINED_TERMINAL_TASKS, pruneTaskState, runCodex, safeText, sanitizeStructured, tasks, tools, validatePrompt } = await import('./server.mjs');
 
 const HERE = testStateDir;
 const fixture = path.join(HERE, '.fake-codex.mjs');
@@ -153,6 +153,17 @@ test('prompt size and secret filtering are bounded', () => {
   assert.throws(() => validatePrompt('x'.repeat(12_001)), /excede/);
   assert.match(safeText('Bearer abcdefghijklmnop sk-1234567890abcdef api_key=secretvalue'), /REDACTED/);
   assert.ok(safeText('x'.repeat(20_000)).length <= 8_000);
+});
+
+test('secret filtering covers quoted structured fields and common token formats', () => {
+  const input = '{"api_key":"json-secret-value", "password": "two words", token: github_pat_12345678901234567890, jwt: eyJabcdefgh.abcdefgh.abcdefgh, slack: xoxb-1234567890abcdef, key: -----BEGIN PRIVATE KEY-----\\nprivate-material\\n-----END PRIVATE KEY-----}';
+  const filtered = safeText(input);
+  for (const secret of ['json-secret-value', 'two words', 'github_pat_12345678901234567890', 'eyJabcdefgh.abcdefgh.abcdefgh', 'xoxb-1234567890abcdef', 'private-material']) assert.equal(filtered.includes(secret), false, secret);
+  assert.match(filtered, /"api_key":"\[REDACTED\]"/);
+  const structured = sanitizeStructured({ nested: { password: 'raw-secret', output: 'Bearer abcdefghijklmnop' }, list: ['sk-1234567890abcdef'] });
+  assert.equal(structured.nested.password, '[REDACTED]');
+  assert.equal(structured.nested.output, 'Bearer [REDACTED]');
+  assert.equal(structured.list[0], '[REDACTED]');
 });
 
 test('profile extraction accepts supported events and reads only the selected Codex config profile', () => {

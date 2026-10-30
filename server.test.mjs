@@ -80,6 +80,8 @@ test('HTTP MCP exige token válido para POST e DELETE', async () => {
   assert.equal(crossSiteDashboard.status, 403);
   const sameOriginDashboard = await fetch(`http://127.0.0.1:${port}/dashboard`, { headers: { origin: `http://127.0.0.1:${port}`, authorization } });
   assert.equal(sameOriginDashboard.status, 200);
+  assert.equal(sameOriginDashboard.headers.get('cache-control'), 'no-store');
+  assert.equal(sameOriginDashboard.headers.get('x-content-type-options'), 'nosniff');
 });
 
 test('MCP handshake, discovery, and safe status call', async () => {
@@ -96,7 +98,7 @@ test('MCP handshake, discovery, and safe status call', async () => {
     };
     const init = await rpc(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } });
     assert.equal(init.result.serverInfo.name, 'codexbridge');
-    assert.equal(init.result.serverInfo.version, '0.2.6');
+    assert.equal(init.result.serverInfo.version, '0.2.7');
     const listed = await rpc(2, 'tools/list', {});
     const expectedTools = [
       'public_page_open', 'public_page_read',

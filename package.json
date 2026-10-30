@@ -1,6 +1,6 @@
 {
   "name": "codexbridge-unificado",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Servidor MCP local e dashboard do CodexBridge com catálogo informativo de projetos open source.",
   "codexbridge": {
     "projectCatalog": "project-catalog.mjs",

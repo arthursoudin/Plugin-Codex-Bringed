@@ -6,7 +6,7 @@ if ($BridgeSettings.nodePath) {
 } else {
     try { $nodeExe = Resolve-BridgeExecutable -Bundled (Join-Path $BridgeRoot 'tools\node.exe') -UserInstalled (Get-ManagedBridgeTool 'node') -Known (Join-Path $env:USERPROFILE 'node22\node.exe') -Command 'node.exe' }
     catch {
-        if ($BridgeSettings.autoInstallTools -eq $false) { throw "Node.js nao foi encontrado. Execute Install.cmd ou habilite autoInstallTools." }
+        if ($BridgeSettings.allowAutomaticToolInstall -ne $true) { throw "Node.js nao foi encontrado. Execute Install.cmd ou defina allowAutomaticToolInstall como true para permitir a instalacao automatica." }
         Write-Host 'Node.js nao encontrado. Instalando a versao LTS verificada para este usuario...'
         & (Join-Path $PSScriptRoot 'Install-Tools.ps1') -Component Node
         $nodeExe = Resolve-BridgeExecutable -Bundled (Join-Path $BridgeRoot 'tools\node.exe') -UserInstalled (Get-ManagedBridgeTool 'node') -Command 'node.exe'
@@ -14,7 +14,7 @@ if ($BridgeSettings.nodePath) {
 }
 $nodeVersion = (& $nodeExe --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch '^v(?<major>\d+)\.' -or [int]$Matches.major -lt 22) {
-    if ($BridgeSettings.nodePath -or $BridgeSettings.autoInstallTools -eq $false) { throw "Node.js 22 ou superior e necessario. Versao encontrada: $nodeVersion" }
+    if ($BridgeSettings.nodePath -or $BridgeSettings.allowAutomaticToolInstall -ne $true) { throw "Node.js 22 ou superior e necessario. Versao encontrada: $nodeVersion. Atualize-o manualmente ou defina allowAutomaticToolInstall como true para permitir a instalacao automatica." }
     Write-Host "Node.js $nodeVersion e antigo. Instalando a LTS validada..."
     & (Join-Path $PSScriptRoot 'Install-Tools.ps1') -Component Node
     $nodeExe = Get-ManagedBridgeTool 'node'

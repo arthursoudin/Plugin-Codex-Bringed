@@ -2,5 +2,5 @@
   "nodePath": "",
   "tunnelClientPath": "",
   "httpPort": 18473,
-  "autoInstallTools": true
+  "allowAutomaticToolInstall": false
 }

@@ -6,14 +6,14 @@ if ($BridgeSettings.tunnelClientPath) {
 } else {
     try { $clientExe = Resolve-BridgeExecutable -Bundled (Join-Path $BridgeRoot 'tools\tunnel-client.exe') -UserInstalled (Get-ManagedBridgeTool 'tunnelClient') -Command 'tunnel-client.exe' }
     catch {
-        if ($BridgeSettings.autoInstallTools -eq $false) { throw "tunnel-client nao foi encontrado. Execute Install.cmd ou habilite autoInstallTools." }
+        if ($BridgeSettings.allowAutomaticToolInstall -ne $true) { throw "tunnel-client nao foi encontrado. Instale-o manualmente ou defina allowAutomaticToolInstall como true para permitir a instalacao automatica." }
         Write-Host 'tunnel-client nao encontrado. Instalando a versao oficial verificada...'
         & (Join-Path $PSScriptRoot 'Install-Tools.ps1') -Component Tunnel
         $clientExe = Get-ManagedBridgeTool 'tunnelClient'
     }
     $versionOutput = if ($clientExe) { (& $clientExe --version 2>&1 | Out-String).Trim() } else { '' }
     if (-not $clientExe -or $LASTEXITCODE -ne 0 -or $versionOutput -notmatch 'v?0\.0\.18') {
-        if ($BridgeSettings.autoInstallTools -eq $false) { throw "tunnel-client v0.0.18 e necessario para esta instalacao. Versao encontrada: $versionOutput" }
+        if ($BridgeSettings.allowAutomaticToolInstall -ne $true) { throw "tunnel-client v0.0.18 e necessario para esta instalacao. Versao encontrada: $versionOutput. Atualize-o manualmente ou defina allowAutomaticToolInstall como true para permitir a instalacao automatica." }
         Write-Host "Atualizando tunnel-client para v0.0.18 (versao encontrada: $versionOutput)..."
         & (Join-Path $PSScriptRoot 'Install-Tools.ps1') -Component Tunnel
         $clientExe = Get-ManagedBridgeTool 'tunnelClient'

@@ -39,6 +39,9 @@ function createHttpServer(workflow, port, mcpToken) { return http.createServer(a
         .end('Informe o usuário codexbridge e o token MCP local para abrir esta página.');
       return;
     }
+    // Prevent protected UI and approval pages from being stored by HTTP caches.
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
   }
   if (req.url?.startsWith('/validate/')) {
     await workflow.serveValidation(req, res);
